@@ -131,6 +131,13 @@ chrome.runtime.onMessage.addListener((msg) => {
         };
 
         screenRecorder.start();
+        const initialDOM = captureInitialDOM();
+
+        chrome.runtime.sendMessage({
+          type: "initialDOM",
+          data: initialDOM,
+        });
+
         recording = true;
         console.log("Screen recording started");
       })
@@ -205,3 +212,31 @@ observer.observe(document.body, {
   characterData: true,
   attributes: true,
 });
+
+function captureInitialDOM() {
+  const elements = [];
+
+  const all = document.querySelectorAll("*");
+
+  all.forEach((el) => {
+    const rect = el.getBoundingClientRect();
+
+    // ignore invisible / tiny
+    if (rect.width < 20 || rect.height < 20) return;
+
+    const textLength = (el.innerText || "").trim().length;
+
+    elements.push({
+      tag: el.tagName,
+      textLength,
+      boundingBox: {
+        x: rect.left,
+        y: rect.top,
+        w: rect.width,
+        h: rect.height,
+      },
+    });
+  });
+
+  return elements;
+}

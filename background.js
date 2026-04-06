@@ -3,6 +3,7 @@ let recording = false;
 let samples = [];
 let events = [];
 let mutations = [];
+let initialDOM = [];
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // START RECORDING
@@ -44,7 +45,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       });
     });
 
-    const data = { samples, events, mutations };
+    const data = { samples, events, mutations, initialDOM };
 
     const blob = new Blob([JSON.stringify(data, null, 2)], {
       type: "application/json",
@@ -115,6 +116,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   else if (msg.type === "mutation") {
     if (recording) {
       mutations.push(msg.data);
+    }
+  }
+
+  // initial DOM capture
+  else if (msg.type === "initialDOM") {
+    if (recording) {
+      initialDOM = msg.data;
     }
   }
 });
