@@ -167,3 +167,41 @@ chrome.runtime.onMessage.addListener((msg) => {
     console.log("Recording OFF");
   }
 });
+
+const observer = new MutationObserver((mutations) => {
+  if (!recording) return;
+
+  mutations.forEach((mutation) => {
+    const target = mutation.target;
+
+    const rect = target.getBoundingClientRect();
+
+    const change = {
+      time: performance.now(),
+      type: mutation.type,
+
+      element: {
+        tag: target.tagName,
+        textLength: (target.innerText || "").length,
+        boundingBox: {
+          x: rect.left,
+          y: rect.top,
+          w: rect.width,
+          h: rect.height,
+        },
+      },
+    };
+
+    chrome.runtime.sendMessage({
+      type: "mutation",
+      data: change,
+    });
+  });
+});
+
+observer.observe(document.body, {
+  childList: true,
+  subtree: true,
+  characterData: true,
+  attributes: true,
+});

@@ -2,6 +2,7 @@ let recording = false;
 
 let samples = [];
 let events = [];
+let mutations = [];
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // START RECORDING
@@ -43,7 +44,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       });
     });
 
-    const data = { samples, events };
+    const data = { samples, events, mutations };
 
     const blob = new Blob([JSON.stringify(data, null, 2)], {
       type: "application/json",
@@ -99,11 +100,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (recording) {
       events.push(msg.data);
     }
-  } else if (msg.type === "DOWNLOAD_VIDEO") {
+  }
+
+  //Download
+  else if (msg.type === "DOWNLOAD_VIDEO") {
     chrome.downloads.download({
       url: msg.data,
       filename: "screen.webm",
       saveAs: true,
     });
+  }
+
+  //mutation
+  else if (msg.type === "mutation") {
+    if (recording) {
+      mutations.push(msg.data);
+    }
   }
 });
