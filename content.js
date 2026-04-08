@@ -1,10 +1,9 @@
 let recording = false;
+let startTime = 0;
 
 let screenRecorder = null;
 let screenChunks = [];
 let screenStream = null;
-
-let startTime = 0;
 
 let lastX = 0;
 let lastY = 0;
@@ -12,82 +11,123 @@ let lastTime = performance.now();
 
 let recentSamples = [];
 
-// SAMPLE LOOP
+// ---------------- ELEMENT CHAIN ----------------
+function getElementChain(el) {
+  const chain = [];
+  let current = el;
+  let depth = 0;
+
+  while (current && depth < 5) {
+    const rect = current.getBoundingClientRect();
+
+    chain.push({
+      tag: current.tagName,
+      textLength: (current.innerText || "").length,
+      boundingBox: {
+        x: rect.left,
+        y: rect.top,
+        w: rect.width,
+        h: rect.height
+      },
+      clickable:
+        current.tagName === "BUTTON" ||
+        current.tagName === "A" ||
+        current.onclick != null
+    });
+
+    current = current.parentElement;
+    depth++;
+  }
+
+  return chain;
+}
+
+// ---------------- SAMPLE ----------------
 function sample() {
   if (!recording) return;
 
-  const t = performance.now();
+  const now = performance.now();
+  const time = now - startTime;
+
+  if (time < 0) return;
+
+  const x = lastX / window.innerWidth;
+  const y = lastY / window.innerHeight;
 
   const el = document.elementFromPoint(lastX, lastY);
+  const chain = getElementChain(el);
 
-  const prev = recentSamples[recentSamples.length - 1];
-
-  const dx = lastX - (prev ? prev.rawX : lastX);
-  const dy = lastY - (prev ? prev.rawY : lastY);
-  const dt = t - lastTime;
+  const dt = now - lastTime;
+  const dx = lastX - (recentSamples.at(-1)?.rawX || lastX);
+  const dy = lastY - (recentSamples.at(-1)?.rawY || lastY);
 
   const velocity = Math.sqrt(dx * dx + dy * dy) / (dt || 1);
 
-  const sample = {
-    time: t - startTime,
-    x: lastX / window.innerWidth,
-    y: lastY / window.innerHeight,
+  const s = {
+    time,
+    x,
+    y,
     rawX: lastX,
     rawY: lastY,
     velocity,
-    element: getElementData(el),
+    elementChain: chain
   };
 
-  recentSamples.push(sample);
+  recentSamples.push(s);
   if (recentSamples.length > 20) recentSamples.shift();
 
-  chrome.runtime.sendMessage({ type: "sample", data: sample });
+  chrome.runtime.sendMessage({ type: "sample", data: s });
 
-  lastTime = t;
+  lastTime = now;
 }
 
 setInterval(sample, 50);
 
-// MOUSE
+// ---------------- MOUSE ----------------
 document.addEventListener("mousemove", (e) => {
   lastX = e.clientX;
   lastY = e.clientY;
 });
 
-// EVENTS
+// ---------------- EVENTS ----------------
 document.addEventListener("click", (e) => {
   if (!recording) return;
 
-  const el = document.elementFromPoint(e.clientX, e.clientY);
+  const time = performance.now() - startTime;
+  const chain = getElementChain(
+    document.elementFromPoint(e.clientX, e.clientY)
+  );
 
   chrome.runtime.sendMessage({
     type: "event",
     data: {
       type: "click",
-      time: performance.now() - startTime,
+      time,
       x: e.clientX / window.innerWidth,
       y: e.clientY / window.innerHeight,
-      element: getElementData(el),
-      context: [...recentSamples],
-    },
+      elementChain: chain,
+      context: [...recentSamples]
+    }
   });
 });
 
 document.addEventListener("keydown", (e) => {
   if (!recording) return;
 
+  const time = performance.now() - startTime;
+
   chrome.runtime.sendMessage({
     type: "event",
     data: {
       type: "keydown",
       key: e.key,
-      time: performance.now() - startTime,
-      context: [...recentSamples],
-    },
+      time,
+      context: [...recentSamples]
+    }
   });
 });
 
-// START / STOP
+// ---------------- START ----------------
 chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.type === "START") {
@@ -109,26 +149,21 @@ chrome.runtime.onMessage.addListener((msg) => {
 
       screenRecorder.start();
 
-startTime = performance.now();
+      startTime = performance.now();
 
-const viewport = {
-  width: window.innerWidth,
-  height: window.innerHeight,
-  devicePixelRatio: window.devicePixelRatio
-};
-
-chrome.runtime.sendMessage({
-  type: "initialDOM",
-  data: {
-    elements: captureInitialDOM(),
-    viewport
-  }
-});
+      chrome.runtime.sendMessage({
+        type: "INIT",
+        data: {
+          viewport: {
+            width: window.innerWidth,
+            height: window.innerHeight
+          },
+          initialDOM: [] // no longer needed heavy DOM
+        }
+      });
 
       recording = true;
-
-    }).catch(err => {
-      console.error(err);
+      console.log("Recording started (with DOM chain)");
     });
   }
 
@@ -139,7 +174,9 @@ chrome.runtime.sendMessage({
       screenRecorder.stop();
 
       screenRecorder.onstop = () => {
-        const blob = new Blob(screenChunks, { type: "video/webm" });
+        const blob = new Blob(screenChunks, {
+          type: "video/webm"
+        });
 
         const reader = new FileReader();
 
@@ -153,87 +190,7 @@ chrome.runtime.sendMessage({
         reader.readAsDataURL(blob);
       };
 
-      screenStream.getTracks().forEach(t => t.stop());
+      screenStream.getTracks().forEach((t) => t.stop());
     }
   }
 });
-
-// MUTATIONS
-const observer = new MutationObserver((mutations) => {
-  if (!recording) return;
-
-  mutations.forEach((m) => {
-
-    if (m.type === "attributes") return;
-
-    const el = m.target;
-    if (!el || !el.getBoundingClientRect) return;
-
-    const rect = el.getBoundingClientRect();
-    if (rect.width < 20 || rect.height < 20) return;
-
-    chrome.runtime.sendMessage({
-      type: "mutation",
-      data: {
-        time: performance.now() - startTime,
-        type: m.type,
-        element: {
-          tag: el.tagName,
-          textLength: (el.innerText || "").length,
-          boundingBox: {
-            x: rect.left,
-            y: rect.top,
-            w: rect.width,
-            h: rect.height
-          }
-        }
-      }
-    });
-  });
-});
-
-observer.observe(document.body, {
-  childList: true,
-  subtree: true,
-  characterData: true
-});
-
-// HELPERS
-function getElementData(el) {
-  if (!el) return null;
-
-  const r = el.getBoundingClientRect();
-
-  return {
-    tag: el.tagName,
-    textLength: (el.innerText || "").length,
-    boundingBox: {
-      x: r.left,
-      y: r.top,
-      w: r.width,
-      h: r.height
-    }
-  };
-}
-
-function captureInitialDOM() {
-  const out = [];
-
-  document.querySelectorAll("*").forEach(el => {
-    const r = el.getBoundingClientRect();
-    if (r.width < 20 || r.height < 20) return;
-
-    out.push({
-      tag: el.tagName,
-      textLength: (el.innerText || "").trim().length,
-      boundingBox: {
-        x: r.left,
-        y: r.top,
-        w: r.width,
-        h: r.height
-      }
-    });
-  });
-
-  return out;
-}

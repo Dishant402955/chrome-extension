@@ -1,47 +1,55 @@
 let recording = false;
-let viewport = null;
 
 let samples = [];
 let events = [];
-let mutations = [];
 let initialDOM = [];
+let viewport = null;
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((msg, sender) => {
 
-  // START
   if (msg.type === "START") {
     recording = true;
 
     samples = [];
     events = [];
-    mutations = [];
     initialDOM = [];
+    viewport = null;
 
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const tabId = tabs[0].id;
+      const tab = tabs[0];
+      if (!tab?.id) return;
 
-      // inject content script
       chrome.scripting.executeScript({
-        target: { tabId },
+        target: { tabId: tab.id },
         files: ["content.js"]
       }, () => {
 
-        chrome.tabs.sendMessage(tabId, { type: "START" });
+        chrome.tabs.sendMessage(tab.id, { type: "START" }, () => {
+          if (chrome.runtime.lastError) return;
+        });
+
       });
     });
   }
 
-  // STOP
   else if (msg.type === "STOP") {
     recording = false;
 
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const tabId = tabs[0].id;
+      const tab = tabs[0];
+      if (!tab?.id) return;
 
-      chrome.tabs.sendMessage(tabId, { type: "STOP" }, () => {});
+      chrome.tabs.sendMessage(tab.id, { type: "STOP" }, () => {
+        if (chrome.runtime.lastError) return;
+      });
     });
 
-    const data = { samples, events, mutations, initialDOM, viewport };
+    const data = {
+      meta: { viewport },
+      samples,
+      events,
+      initialDOM
+    };
 
     const blob = new Blob([JSON.stringify(data, null, 2)], {
       type: "application/json"
@@ -60,18 +68,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     reader.readAsDataURL(blob);
   }
 
-  // DATA
-  else if (msg.type === "sample" && recording) samples.push(msg.data);
-  else if (msg.type === "event" && recording) events.push(msg.data);
-  else if (msg.type === "mutation" && recording) mutations.push(msg.data);
-else if (msg.type === "initialDOM") {
-  if (recording) {
-    initialDOM = msg.data.elements;
+  else if (msg.type === "INIT") {
+    if (!recording) return;
     viewport = msg.data.viewport;
+    initialDOM = msg.data.initialDOM;
   }
-}
 
-  // VIDEO
+  else if (msg.type === "sample" && recording) {
+    samples.push(msg.data);
+  }
+
+  else if (msg.type === "event" && recording) {
+    events.push(msg.data);
+  }
+
   else if (msg.type === "DOWNLOAD_VIDEO") {
     chrome.downloads.download({
       url: msg.data,
