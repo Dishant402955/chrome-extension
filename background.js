@@ -6,123 +6,71 @@ let mutations = [];
 let initialDOM = [];
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // START RECORDING
+
+  // START
   if (msg.type === "START") {
     recording = true;
+
     samples = [];
     events = [];
+    mutations = [];
+    initialDOM = [];
 
-    console.log("Recording started");
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs[0].id;
 
-    // notify all tabs
-    chrome.tabs.query({}, (tabs) => {
-      tabs.forEach((tab) => {
-        chrome.tabs.sendMessage(tab.id, { type: "START" }, () => {
-          if (chrome.runtime.lastError) {
-            // ignore tabs without content script
-          }
-        });
+      // inject content script
+      chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content.js"]
+      }, () => {
+
+        chrome.tabs.sendMessage(tabId, { type: "START" });
       });
     });
   }
 
-  // STOP RECORDING
+  // STOP
   else if (msg.type === "STOP") {
     recording = false;
 
-    console.log("Recording stopped");
-    console.log("Samples:", samples.length);
-    console.log("Events:", events.length);
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs[0].id;
 
-    // notify all tabs
-    chrome.tabs.query({}, (tabs) => {
-      tabs.forEach((tab) => {
-        chrome.tabs.sendMessage(tab.id, { type: "STOP" }, () => {
-          if (chrome.runtime.lastError) {
-            // ignore tabs without content script
-          }
-        });
-      });
+      chrome.tabs.sendMessage(tabId, { type: "STOP" }, () => {});
     });
 
     const data = { samples, events, mutations, initialDOM };
 
     const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: "application/json",
+      type: "application/json"
     });
 
-    // ✅ FIX for MV3 (NO createObjectURL)
     const reader = new FileReader();
 
     reader.onload = function () {
       chrome.downloads.download({
         url: reader.result,
         filename: "recording.json",
-        saveAs: true,
+        saveAs: true
       });
     };
 
     reader.readAsDataURL(blob);
-    if (screenRecorder) {
-      screenRecorder.stop();
-
-      screenRecorder.onstop = () => {
-        const screenBlob = new Blob(screenChunks, {
-          type: "video/webm",
-        });
-
-        const reader = new FileReader();
-
-        reader.onload = function () {
-          chrome.downloads.download({
-            url: reader.result,
-            filename: "screen.webm",
-            saveAs: true,
-          });
-        };
-
-        reader.readAsDataURL(screenBlob);
-      };
-
-      // stop tracks
-      screenStream.getTracks().forEach((track) => track.stop());
-    }
   }
 
-  // SAMPLE DATA
-  else if (msg.type === "sample") {
-    if (recording) {
-      samples.push(msg.data);
-    }
-  }
+  // DATA
+  else if (msg.type === "sample" && recording) samples.push(msg.data);
+  else if (msg.type === "event" && recording) events.push(msg.data);
+  else if (msg.type === "mutation" && recording) mutations.push(msg.data);
+  else if (msg.type === "initialDOM" && recording) initialDOM = msg.data;
 
-  // EVENT DATA
-  else if (msg.type === "event") {
-    if (recording) {
-      events.push(msg.data);
-    }
-  }
-
-  //Download
+  // VIDEO
   else if (msg.type === "DOWNLOAD_VIDEO") {
     chrome.downloads.download({
       url: msg.data,
       filename: "screen.webm",
-      saveAs: true,
+      saveAs: true
     });
-  }
-
-  //mutation
-  else if (msg.type === "mutation") {
-    if (recording) {
-      mutations.push(msg.data);
-    }
-  }
-
-  // initial DOM capture
-  else if (msg.type === "initialDOM") {
-    if (recording) {
-      initialDOM = msg.data;
-    }
   }
 });

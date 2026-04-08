@@ -4,67 +4,42 @@ let screenRecorder = null;
 let screenChunks = [];
 let screenStream = null;
 
-console.log("Content script loaded");
+let startTime = 0;
+
 let lastX = 0;
 let lastY = 0;
 let lastTime = performance.now();
 
 let recentSamples = [];
 
-function getElementData(el) {
-  if (!el) return null;
-
-  const rect = el.getBoundingClientRect();
-
-  return {
-    tag: el.tagName,
-    textLength: (el.innerText || "").length,
-    boundingBox: {
-      x: rect.left,
-      y: rect.top,
-      w: rect.width,
-      h: rect.height,
-    },
-  };
-}
-
+// SAMPLE LOOP
 function sample() {
   if (!recording) return;
 
-  if (recording) {
-    console.log("Sampling...", lastX, lastY);
-  }
-
   const t = performance.now();
 
-  const x = lastX / window.innerWidth;
-  const y = lastY / window.innerHeight;
-
   const el = document.elementFromPoint(lastX, lastY);
-  const element = getElementData(el);
 
+  const prev = recentSamples[recentSamples.length - 1];
+
+  const dx = lastX - (prev ? prev.rawX : lastX);
+  const dy = lastY - (prev ? prev.rawY : lastY);
   const dt = t - lastTime;
-  const dx = lastX - (recentSamples.at(-1)?.rawX || lastX);
-  const dy = lastY - (recentSamples.at(-1)?.rawY || lastY);
 
   const velocity = Math.sqrt(dx * dx + dy * dy) / (dt || 1);
 
   const sample = {
-    time: t,
-    x,
-    y,
+    time: t - startTime,
+    x: lastX / window.innerWidth,
+    y: lastY / window.innerHeight,
     rawX: lastX,
     rawY: lastY,
     velocity,
-    element,
+    element: getElementData(el),
   };
 
   recentSamples.push(sample);
-
-  // keep last ~1 sec
-  if (recentSamples.length > 20) {
-    recentSamples.shift();
-  }
+  if (recentSamples.length > 20) recentSamples.shift();
 
   chrome.runtime.sendMessage({ type: "sample", data: sample });
 
@@ -73,11 +48,13 @@ function sample() {
 
 setInterval(sample, 50);
 
+// MOUSE
 document.addEventListener("mousemove", (e) => {
   lastX = e.clientX;
   lastY = e.clientY;
 });
 
+// EVENTS
 document.addEventListener("click", (e) => {
   if (!recording) return;
 
@@ -87,7 +64,7 @@ document.addEventListener("click", (e) => {
     type: "event",
     data: {
       type: "click",
-      time: performance.now(),
+      time: performance.now() - startTime,
       x: e.clientX / window.innerWidth,
       y: e.clientY / window.innerHeight,
       element: getElementData(el),
@@ -104,104 +81,104 @@ document.addEventListener("keydown", (e) => {
     data: {
       type: "keydown",
       key: e.key,
-      time: performance.now(),
+      time: performance.now() - startTime,
       context: [...recentSamples],
     },
   });
 });
 
+// START / STOP
 chrome.runtime.onMessage.addListener((msg) => {
+
   if (msg.type === "START") {
     recording = false;
-    navigator.mediaDevices
-      .getDisplayMedia({
-        video: true,
-        audio: true,
-      })
-      .then((stream) => {
-        screenStream = stream;
-        screenChunks = [];
 
-        screenRecorder = new MediaRecorder(stream);
+    navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true
+    }).then((stream) => {
 
-        screenRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) {
-            screenChunks.push(e.data);
-          }
-        };
+      screenStream = stream;
+      screenChunks = [];
 
-        screenRecorder.start();
-        const initialDOM = captureInitialDOM();
+      screenRecorder = new MediaRecorder(stream);
 
-        chrome.runtime.sendMessage({
-          type: "initialDOM",
-          data: initialDOM,
-        });
+      screenRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) screenChunks.push(e.data);
+      };
 
-        recording = true;
-        console.log("Screen recording started");
-      })
-      .catch((err) => {
-        console.error("Screen capture failed:", err);
+      screenRecorder.start();
+
+      startTime = performance.now();
+
+      chrome.runtime.sendMessage({
+        type: "initialDOM",
+        data: captureInitialDOM()
       });
-    console.log("Recording ON");
+
+      recording = true;
+
+    }).catch(err => {
+      console.error(err);
+    });
   }
 
   if (msg.type === "STOP") {
     recording = false;
+
     if (screenRecorder) {
       screenRecorder.stop();
 
       screenRecorder.onstop = () => {
-        const blob = new Blob(screenChunks, {
-          type: "video/webm",
-        });
+        const blob = new Blob(screenChunks, { type: "video/webm" });
 
         const reader = new FileReader();
 
         reader.onload = function () {
           chrome.runtime.sendMessage({
             type: "DOWNLOAD_VIDEO",
-            data: reader.result,
+            data: reader.result
           });
         };
 
         reader.readAsDataURL(blob);
       };
 
-      screenStream.getTracks().forEach((track) => track.stop());
+      screenStream.getTracks().forEach(t => t.stop());
     }
-    console.log("Recording OFF");
   }
 });
 
+// MUTATIONS
 const observer = new MutationObserver((mutations) => {
   if (!recording) return;
 
-  mutations.forEach((mutation) => {
-    const target = mutation.target;
+  mutations.forEach((m) => {
 
-    const rect = target.getBoundingClientRect();
+    if (m.type === "attributes") return;
 
-    const change = {
-      time: performance.now(),
-      type: mutation.type,
+    const el = m.target;
+    if (!el || !el.getBoundingClientRect) return;
 
-      element: {
-        tag: target.tagName,
-        textLength: (target.innerText || "").length,
-        boundingBox: {
-          x: rect.left,
-          y: rect.top,
-          w: rect.width,
-          h: rect.height,
-        },
-      },
-    };
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 20 || rect.height < 20) return;
 
     chrome.runtime.sendMessage({
       type: "mutation",
-      data: change,
+      data: {
+        time: performance.now() - startTime,
+        type: m.type,
+        element: {
+          tag: el.tagName,
+          textLength: (el.innerText || "").length,
+          boundingBox: {
+            x: rect.left,
+            y: rect.top,
+            w: rect.width,
+            h: rect.height
+          }
+        }
+      }
     });
   });
 });
@@ -209,34 +186,45 @@ const observer = new MutationObserver((mutations) => {
 observer.observe(document.body, {
   childList: true,
   subtree: true,
-  characterData: true,
-  attributes: true,
+  characterData: true
 });
 
+// HELPERS
+function getElementData(el) {
+  if (!el) return null;
+
+  const r = el.getBoundingClientRect();
+
+  return {
+    tag: el.tagName,
+    textLength: (el.innerText || "").length,
+    boundingBox: {
+      x: r.left,
+      y: r.top,
+      w: r.width,
+      h: r.height
+    }
+  };
+}
+
 function captureInitialDOM() {
-  const elements = [];
+  const out = [];
 
-  const all = document.querySelectorAll("*");
+  document.querySelectorAll("*").forEach(el => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 20 || r.height < 20) return;
 
-  all.forEach((el) => {
-    const rect = el.getBoundingClientRect();
-
-    // ignore invisible / tiny
-    if (rect.width < 20 || rect.height < 20) return;
-
-    const textLength = (el.innerText || "").trim().length;
-
-    elements.push({
+    out.push({
       tag: el.tagName,
-      textLength,
+      textLength: (el.innerText || "").trim().length,
       boundingBox: {
-        x: rect.left,
-        y: rect.top,
-        w: rect.width,
-        h: rect.height,
-      },
+        x: r.left,
+        y: r.top,
+        w: r.width,
+        h: r.height
+      }
     });
   });
 
-  return elements;
+  return out;
 }
