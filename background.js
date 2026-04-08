@@ -1,4 +1,5 @@
 let recording = false;
+let viewport = null;
 
 let samples = [];
 let events = [];
@@ -40,7 +41,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       chrome.tabs.sendMessage(tabId, { type: "STOP" }, () => {});
     });
 
-    const data = { samples, events, mutations, initialDOM };
+    const data = { samples, events, mutations, initialDOM, viewport };
 
     const blob = new Blob([JSON.stringify(data, null, 2)], {
       type: "application/json"
@@ -63,7 +64,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   else if (msg.type === "sample" && recording) samples.push(msg.data);
   else if (msg.type === "event" && recording) events.push(msg.data);
   else if (msg.type === "mutation" && recording) mutations.push(msg.data);
-  else if (msg.type === "initialDOM" && recording) initialDOM = msg.data;
+else if (msg.type === "initialDOM") {
+  if (recording) {
+    initialDOM = msg.data.elements;
+    viewport = msg.data.viewport;
+  }
+}
 
   // VIDEO
   else if (msg.type === "DOWNLOAD_VIDEO") {

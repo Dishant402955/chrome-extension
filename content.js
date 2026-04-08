@@ -109,12 +109,21 @@ chrome.runtime.onMessage.addListener((msg) => {
 
       screenRecorder.start();
 
-      startTime = performance.now();
+startTime = performance.now();
 
-      chrome.runtime.sendMessage({
-        type: "initialDOM",
-        data: captureInitialDOM()
-      });
+const viewport = {
+  width: window.innerWidth,
+  height: window.innerHeight,
+  devicePixelRatio: window.devicePixelRatio
+};
+
+chrome.runtime.sendMessage({
+  type: "initialDOM",
+  data: {
+    elements: captureInitialDOM(),
+    viewport
+  }
+});
 
       recording = true;
 
