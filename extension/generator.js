@@ -312,7 +312,8 @@ box = expandBox(box, viewport);
 
     output.push({
       t: [seg.tStart / 1000, seg.tEnd / 1000],
-      zoom
+      zoom, 
+      webcam:{x:0.88, y:0.78, w:0.22, h:0.22}
     });
   }
 
