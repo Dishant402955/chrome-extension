@@ -1,3 +1,6 @@
+let localSamples = []
+let localEvents = []
+
 let recording = false;
 let startTime = 0;
 
@@ -77,6 +80,7 @@ function sample() {
   recentSamples.push(s);
   if (recentSamples.length > 20) recentSamples.shift();
 
+  localSamples.push(s);
   chrome.runtime.sendMessage({ type: "sample", data: s });
 
   lastTime = now;
@@ -95,9 +99,8 @@ document.addEventListener("click", (e) => {
 
   const time = performance.now() - startTime;
 
-  chrome.runtime.sendMessage({
-    type: "event",
-    data: {
+  const eventData = {
+  
       type: "click",
       time,
       x: e.clientX / window.innerWidth,
@@ -106,8 +109,17 @@ document.addEventListener("click", (e) => {
         document.elementFromPoint(e.clientX, e.clientY)
       ),
       context: [...recentSamples]
-    }
+    
+  }
+
+  localEvents.push(eventData)
+  chrome.runtime.sendMessage({
+    type:'event',
+    data: eventData
   });
+
+
+
 });
 
 // ---------------- HELPER ----------------
@@ -202,8 +214,16 @@ chrome.runtime.onMessage.addListener(async (msg) => {
 
     const screenDataUrl = await blobToDataURL(screenBlob);
     const webcamDataUrl = await blobToDataURL(webcamBlob);
-
-    const script = []; // still placeholder
+    const script = generateScript({
+      samples:localSamples,
+      events:localEvents,
+      meta:{
+        viewport:{
+          width:window.innerWidth,
+          height:window.innerHeight
+        }
+      }
+    })
 
     chrome.runtime.sendMessage({
       type: "FINAL_DATA",
