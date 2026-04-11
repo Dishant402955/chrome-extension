@@ -1,10 +1,11 @@
 import { Button } from "@/components/ui/button"
+import VideoPlayer from "@/components/video-player"
+import script from "@/data/script.json"
 
 export default function Page() {
   return (
-    <div className="flex min-h-svh p-6">
-      <div className="flex max-w-md min-w-0 flex-col gap-4 text-sm leading-loose">
-      </div>
-    </div>
+
+        <VideoPlayer timeline={script}/>
+     
   )
 }
