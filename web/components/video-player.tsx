@@ -1,16 +1,12 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useEditorStore } from "@/store/editor-store";
 
 type Block = any;
 
-export default function VideoPlayer({
-  src = "/screen.webm",
-  timeline = [],
-}: {
-  src?: string;
-  timeline: Block[];
-}) {
+export default function VideoPlayer() {
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const webcamRef = useRef<HTMLVideoElement>(null);
   const magnifierVideoRef = useRef<HTMLVideoElement>(null);
@@ -28,6 +24,9 @@ export default function VideoPlayer({
 
   const magnifierRef = useRef<HTMLDivElement>(null);
   const subtitleRef = useRef<HTMLDivElement>(null);
+
+  const timeline = useEditorStore((s) => s.timeline)
+  const videoUrl = useEditorStore((s) => s.videoUrl)
 
   useEffect(() => {
     const video = videoRef.current!;
@@ -147,7 +146,8 @@ export default function VideoPlayer({
 
         <video
           ref={videoRef}
-          src={src}
+          // @ts-expect-error
+          src={videoUrl}
           controls
           className="w-full h-full object-contain transition-transform duration-500 origin-top-left"
         />
@@ -156,7 +156,8 @@ export default function VideoPlayer({
 
           <video
             ref={webcamRef}
-            src={src}
+            // @ts-expect-error
+            src={videoUrl}
             muted
             className="absolute hidden border-2 border-white rounded-xl shadow-lg"
           />
@@ -179,7 +180,8 @@ export default function VideoPlayer({
           >
             <video
               ref={magnifierVideoRef}
-              src={src}
+              // @ts-expect-error
+              src={videoUrl}
               className="absolute w-full h-full object-cover"
             />
           </div>
