@@ -6,10 +6,6 @@ import { useEditorStore } from "@/store/editor-store";
 export default function VideoPlayer() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const webcamRef = useRef<HTMLVideoElement>(null);
-  const magnifierVideoRef = useRef<HTMLVideoElement>(null);
-
-  const subtitleRef = useRef<HTMLDivElement>(null);
-  const magnifierRef = useRef<HTMLDivElement>(null);
 
   const timeline = useEditorStore((s) => s.timeline);
   const videoUrl = useEditorStore((s) => s.videoUrl);
@@ -19,149 +15,124 @@ export default function VideoPlayer() {
   const pause = useEditorStore((s) => s.pause);
   const setTime = useEditorStore((s) => s.setTime);
   const currentTime = useEditorStore((s) => s.currentTime);
+  const setDuration = useEditorStore((s) => s.setDuration);
 
   const [showControls, setShowControls] = useState(true);
   const hideTimer = useRef<any>(null);
 
-  // ---------------- PLAYBACK CONTROL ----------------
+  // ---------------- PLAY / PAUSE ----------------
   useEffect(() => {
     const v = videoRef.current;
-    const w = webcamRef.current;
-    const m = magnifierVideoRef.current;
-
     if (!v) return;
 
-    if (isPlaying) {
-      v.play();
-      w?.play();
-      m?.play();
-    } else {
-      v.pause();
-      w?.pause();
-      m?.pause();
-    }
+    if (isPlaying) v.play();
+    else v.pause();
   }, [isPlaying]);
 
-  // ---------------- CORE ENGINE ----------------
+  // ---------------- CORE APPLY (WORKS EVEN WHEN PAUSED) ----------------
+  const applyCurrentFrame = () => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const t = video.currentTime;
+
+    let active = timeline[0];
+
+    for (let i = 0; i < timeline.length; i++) {
+      const b = timeline[i];
+      if (t >= b.t[0] && t <= b.t[1]) {
+        active = b;
+        break;
+      }
+    }
+
+    if (!active?.zoom) {
+      video.style.transform = "scale(1)";
+      return;
+    }
+
+    const rect = video.getBoundingClientRect();
+    const W = rect.width;
+    const H = rect.height;
+
+    const { x, y, scale } = active.zoom;
+
+    if (scale <= 1) {
+      video.style.transform = `scale(${scale})`;
+      return;
+    }
+
+    const cx = x * W;
+    const cy = y * H;
+
+    let tX = -cx * scale + W / 2;
+    let tY = -cy * scale + H / 2;
+
+    const minX = W - W * scale;
+    const minY = H - H * scale;
+
+    tX = Math.min(0, Math.max(minX, tX));
+    tY = Math.min(0, Math.max(minY, tY));
+
+    video.style.transform = `translate(${tX}px, ${tY}px) scale(${scale})`;
+  };
+
+  // 🔥 TIME UPDATE
   useEffect(() => {
-    const video = videoRef.current!;
-    const webcam = webcamRef.current!;
-    const magnifier = magnifierVideoRef.current!;
+    const v = videoRef.current;
+    if (!v) return;
 
-    function getSize() {
-      const rect = video.getBoundingClientRect();
-      return { W: rect.width, H: rect.height };
-    }
-
-    function reset() {
-      video.style.transform = "translate(0px,0px) scale(1)";
-      webcam.style.display = "none";
-      magnifierRef.current!.style.display = "none";
-      subtitleRef.current!.innerText = "";
-    }
-
-    function applyBlock(b: any) {
-      const { W, H } = getSize();
-
-      if (b.zoom) {
-        const scale = b.zoom.scale;
-
-        if (scale <= 1) {
-          video.style.transform = `scale(${scale})`;
-          return;
-        }
-
-        const cx = b.zoom.x * W;
-        const cy = b.zoom.y * H;
-
-        let tX = -cx * scale + W / 2;
-        let tY = -cy * scale + H / 2;
-
-        const minX = W - W * scale;
-        const minY = H - H * scale;
-
-        tX = Math.min(0, Math.max(minX, tX));
-        tY = Math.min(0, Math.max(minY, tY));
-
-        video.style.transform = `translate(${tX}px, ${tY}px) scale(${scale})`;
-      }
-
-      if (b.webcam) {
-        webcam.style.display = "block";
-
-        webcam.style.left =
-          b.webcam.x * 100 - (b.webcam.w * 100) / 2 + "%";
-        webcam.style.top =
-          b.webcam.y * 100 - (b.webcam.h * 100) / 2 + "%";
-
-        webcam.style.width = b.webcam.w * 100 + "%";
-        webcam.style.height = b.webcam.h * 100 + "%";
-      }
-
-      if (b.subtitle) {
-        subtitleRef.current!.innerText = b.subtitle;
-      }
-    }
-
-    const onTimeUpdate = () => {
-      const t = video.currentTime;
-
-      // 🔥 ONLY sync if drift > threshold (NO jitter)
-      if (webcam && Math.abs(webcam.currentTime - t) > 0.05) {
-        webcam.currentTime = t;
-      }
-
-      if (magnifier && Math.abs(magnifier.currentTime - t) > 0.05) {
-        magnifier.currentTime = t;
-      }
-
-      setTime(t);
-
-      reset();
-
-      for (let i = 0; i < timeline.length; i++) {
-        const b = timeline[i];
-        if (t >= b.t[0] && t <= b.t[1]) {
-          applyBlock(b);
-        }
-      }
+    const update = () => {
+      setTime(v.currentTime);
+      applyCurrentFrame();
     };
 
-    video.addEventListener("timeupdate", onTimeUpdate);
+    v.addEventListener("timeupdate", update);
 
-    return () => {
-      video.removeEventListener("timeupdate", onTimeUpdate);
-    };
+    return () => v.removeEventListener("timeupdate", update);
   }, [timeline]);
+
+  // 🔥 FIX: APPLY WHEN TIMELINE CHANGES (PAUSED FIX)
+  useEffect(() => {
+    applyCurrentFrame();
+  }, [timeline]);
+
+  // 🔥 SET DURATION
+useEffect(() => {
+  const v = videoRef.current;
+  if (!v) return;
+
+  const handler = () => {
+    if (v.duration && !isNaN(v.duration)) {
+      useEditorStore.getState().setDuration(v.duration);
+    }
+  };
+
+  v.addEventListener("loadedmetadata", handler);
+
+  return () => v.removeEventListener("loadedmetadata", handler);
+}, []);
 
   // ---------------- SEEK ----------------
   const onSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = videoRef.current;
-    const w = webcamRef.current;
-    const m = magnifierVideoRef.current;
-
     if (!v) return;
 
-    const time = Number(e.target.value);
+    const t = Number(e.target.value);
+    v.currentTime = t;
+    setTime(t);
 
-    v.currentTime = time;
-    if (w) w.currentTime = time;
-    if (m) m.currentTime = time;
-
-    setTime(time);
+    applyCurrentFrame(); // 🔥 instant update
   };
 
-  // ---------------- CONTROLS UI ----------------
+  // ---------------- UI ----------------
   const toggle = () => {
-    if (isPlaying) pause();
-    else play();
+    isPlaying ? pause() : play();
   };
 
   const show = () => {
     setShowControls(true);
-
     if (hideTimer.current) clearTimeout(hideTimer.current);
-
     hideTimer.current = setTimeout(() => {
       setShowControls(false);
     }, 2000);
@@ -180,32 +151,9 @@ export default function VideoPlayer() {
     >
       <video
         ref={videoRef}
-        // @ts-expect-error
         src={videoUrl}
-        className="w-full h-full object-contain transition-transform duration-500 origin-top-left"
+        className="w-full h-full object-contain transition-transform duration-300 origin-top-left"
       />
-
-      <div className="absolute inset-0 pointer-events-none">
-        <video
-          ref={webcamRef}
-          src="/webcam.webm"
-          muted
-          className="absolute hidden border-2 border-white rounded-xl shadow-lg"
-        />
-
-        <div ref={magnifierRef} className="absolute hidden">
-          <video 
-          ref={magnifierVideoRef} 
-          // @ts-expect-error
-          src={videoUrl} 
-          />
-        </div>
-
-        <div
-          ref={subtitleRef}
-          className="absolute bottom-6 w-full text-center text-white text-lg"
-        />
-      </div>
 
       {showControls && (
         <div

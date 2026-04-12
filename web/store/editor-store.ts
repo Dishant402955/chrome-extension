@@ -1,87 +1,52 @@
-"use client";
-
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-type Block = any;
-
-type EditorStore = {
-  // 🎬 core data
-  timeline: Block[];
-  videoUrl: string | null;
-
-  // ▶️ playback
-  currentTime: number;
-  duration: number;
-  isPlaying: boolean;
-
-  // 🎯 ui
-  selectedIndex: number | null;
-
-  // ⚙️ actions
-  setTimeline: (t: Block[]) => void;
-  setVideoUrl: (url: string | null) => void;
-
-  setTime: (t: number) => void;
-  setDuration: (d: number) => void;
-
-  play: () => void;
-  pause: () => void;
-  togglePlay: () => void;
-
-  selectBlock: (i: number | null) => void;
-  reset: () => void;
-};
-
-export const useEditorStore = create<EditorStore>()(
+export const useEditorStore = create(
   persist(
     (set) => ({
-      // -------- state --------
-      timeline: [],
-      videoUrl: null,
+      timeline: [
+        {
+          t: [0, 5],
+          zoom: { x: 0.5, y: 0.5, scale: 1.5 },
+        },
+        {
+          t: [5, 10],
+          zoom: { x: 0.3, y: 0.4, scale: 2 },
+        },
+      ],
 
+      selectedIndex: 0,
+      duration: 10,
       currentTime: 0,
-      duration: 0,
       isPlaying: false,
+      videoUrl: "/screen.webm",
 
-      selectedIndex: null,
-
-      // -------- actions --------
-      setTimeline: (timeline) => set({ timeline }),
-
-      setVideoUrl: (url) => set({ videoUrl: url }),
-
-      setTime: (time) => set({ currentTime: time }),
-
-      setDuration: (duration) => set({ duration }),
-
-      play: () => set({ isPlaying: true }),
-
-      pause: () => set({ isPlaying: false }),
-
-      togglePlay: () =>
-        set((s) => ({ isPlaying: !s.isPlaying })),
+      setTimeline: (t) => set({ timeline: t }),
 
       selectBlock: (i) => set({ selectedIndex: i }),
 
-      reset: () =>
-        set({
-          timeline: [],
-          videoUrl: null,
-          currentTime: 0,
-          duration: 0,
-          isPlaying: false,
-          selectedIndex: null,
+      setDuration: (d) => set({ duration: d }),
+
+      setTime: (t) => set({ currentTime: t }),
+
+      play: () => set({ isPlaying: true }),
+      pause: () => set({ isPlaying: false }),
+
+      updateZoom: (zoom) =>
+        set((state) => {
+          const updated = [...state.timeline];
+          const b = updated[state.selectedIndex];
+
+          updated[state.selectedIndex] = {
+            ...b,
+            zoom: { ...b.zoom, ...zoom },
+          };
+
+          return { timeline: updated };
         }),
     }),
     {
-      name: "editor-storage", // 🔥 localStorage key
-
-      // 🔥 IMPORTANT: only persist what makes sense
-      partialize: (state) => ({
-        timeline: state.timeline,
-        videoUrl: state.videoUrl,
-      }),
+      name: "video-editor-store", // 🔥 persistence key
     }
   )
 );

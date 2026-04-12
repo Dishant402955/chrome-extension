@@ -1,25 +1,24 @@
-"use client"
 
-import { Button } from "@/components/ui/button"
-import VideoPlayer from "@/components/video-player"
-import { useEditorStore } from "@/store/editor-store"
-import { useEffect } from "react";
+import VideoPlayer from "@/components/video-player";
+import Timeline from "@/components/timeline";
+import ZoomControls from "@/components/zoom-controls";
 
-export default function Page() {
-  const timeline = useEditorStore((s) => s.timeline);
-  const setTimeline = useEditorStore((s) => s.setTimeline)
-  const setVideoUrl = useEditorStore((s) => s.setVideoUrl)
+export default function EditorPage() {
 
-useEffect(() => {
-    if(timeline.length === 0){
-    fetch("/script.json")
-    .then((res) => res.json()).then((data) => {setTimeline(data)})
-
-    setVideoUrl("/screen.webm")
-  }
-}, [])
 
   return (
-        <VideoPlayer/>
-  )
+    <div className="flex flex-col h-screen bg-black">
+
+      <div className="flex flex-1">
+        <div className="flex-1 flex justify-center items-center">
+          <VideoPlayer />
+        </div>
+
+        <ZoomControls />
+      </div>
+
+      <Timeline />
+
+    </div>
+  );
 }
