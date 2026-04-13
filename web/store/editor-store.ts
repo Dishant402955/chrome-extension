@@ -20,6 +20,43 @@ export const useEditorStore = create(
       currentTime: 0,
       isPlaying: false,
       videoUrl: "/screen.webm",
+      setRange: (index, range) =>
+  set((state) => {
+    const timeline = [...state.timeline];
+    const block = timeline[index];
+
+    const [oldStart, oldEnd] = block.t;
+    const [newStart, newEnd] = range;
+
+    const newTimeline = [];
+
+    // 🔥 LEFT SPLIT
+    if (newStart > oldStart) {
+      newTimeline.push({
+        ...block,
+        t: [oldStart, newStart],
+      });
+    }
+
+    // 🔥 MAIN UPDATED BLOCK
+    newTimeline.push({
+      ...block,
+      t: [newStart, newEnd],
+    });
+
+    // 🔥 RIGHT SPLIT
+    if (newEnd < oldEnd) {
+      newTimeline.push({
+        ...block,
+        t: [newEnd, oldEnd],
+      });
+    }
+
+    // 🔥 replace in timeline
+    timeline.splice(index, 1, ...newTimeline);
+
+    return { timeline };
+  }),
 
       setTimeline: (t) => set({ timeline: t }),
 

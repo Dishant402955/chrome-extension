@@ -47,7 +47,7 @@ export default function VideoPlayer() {
     }
 
     if (!active?.zoom) {
-      video.style.transform = "scale(1)";
+      video.style.transform = "translate(0px,0px) scale(1)";
       return;
     }
 
@@ -167,15 +167,24 @@ useEffect(() => {
             {isPlaying ? "Pause" : "Play"}
           </button>
 
-          <input
-            type="range"
-            min={0}
-            max={videoRef.current?.duration || 0}
-            step="0.01"
-            value={currentTime}
-            onChange={onSeek}
-            className="flex-1"
-          />
+<input
+  type="range"
+  min={0}
+  max={
+    videoRef.current &&
+    isFinite(videoRef.current.duration)
+      ? videoRef.current.duration
+      : 0
+  }
+  step="0.01"
+  value={
+    typeof currentTime === "number" && isFinite(currentTime)
+      ? currentTime
+      : 0
+  }
+  onChange={onSeek}
+  className="flex-1"
+/>
         </div>
       )}
     </div>
