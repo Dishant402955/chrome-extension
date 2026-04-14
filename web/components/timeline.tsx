@@ -4,88 +4,76 @@ import { useRef } from "react";
 import { useEditorStore } from "@/store/editor-store";
 
 const COLORS = [
-  "bg-red-500/40",
-  "bg-green-500/40",
-  "bg-blue-500/40",
-  "bg-yellow-500/40",
-  "bg-purple-500/40",
+  "bg-pink-500",
+  "bg-green-500",
+  "bg-blue-500",
+  "bg-yellow-500",
+  "bg-purple-500",
 ];
 
 export default function Timeline() {
   const ref = useRef<HTMLDivElement>(null);
 
   const timeline = useEditorStore((s) => s.timeline);
-  const durationRaw = useEditorStore((s) => s.duration);
-  const currentTimeRaw = useEditorStore((s) => s.currentTime);
-  const setTime = useEditorStore((s) => s.setTime);
   const selectBlock = useEditorStore((s) => s.selectBlock);
-  const setRange = useEditorStore((s) => s.setRange);
   const selectedIndex = useEditorStore((s) => s.selectedIndex);
 
-  const duration = durationRaw > 0 ? durationRaw : 1;
-  const currentTime = isFinite(currentTimeRaw) ? currentTimeRaw : 0;
+  const currentTime = useEditorStore((s) => s.currentTime);
+  const setTime = useEditorStore((s) => s.setTime);
 
-  const getWidth = () => ref.current?.clientWidth || 1;
+  const total =
+    timeline.length > 0
+      ? Math.max(...timeline.map((b) => b.t[1]))
+      : 1;
 
-  // ✅ REAL proportional mapping (no stretch)
-  const toPx = (t: number) => (t / duration) * getWidth();
-  const toTime = (px: number) => (px / getWidth()) * duration;
+  // 🔥 convert time → %
+  const getPercent = (t: number) => (t / total) * 100;
 
-  const drag =
-    (index: number, type: "start" | "end") => (e: React.MouseEvent) => {
-      e.stopPropagation();
+  // 🔥 DRAG PLAYHEAD
+  const startDrag = (e: React.MouseEvent) => {
+    e.stopPropagation();
 
-      const move = (ev: MouseEvent) => {
-        const rect = ref.current?.getBoundingClientRect();
-        if (!rect) return;
+    const move = (ev: MouseEvent) => {
+      const rect = ref.current?.getBoundingClientRect();
+      if (!rect) return;
 
-        const x = ev.clientX - rect.left;
-        const time = toTime(x);
+      let x = ev.clientX - rect.left;
+      x = Math.max(0, Math.min(x, rect.width));
 
-        const block = timeline[index];
-        const [start, end] = block.t;
+      const percent = x / rect.width;
+      const time = percent * total;
 
-        if (type === "start") {
-          setRange(index, [
-            Math.max(0, Math.min(time, end - 0.1)),
-            end,
-          ]);
-        } else {
-          setRange(index, [
-            start,
-            Math.min(duration, Math.max(time, start + 0.1)),
-          ]);
-        }
-      };
-
-      const up = () => {
-        window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup", up);
-      };
-
-      window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup", up);
+      setTime(time);
     };
 
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
   return (
-    <div className="bg-neutral-900 text-white p-3">
+    <div className="bg-neutral-900 text-white p-3 w-full">
       <div
         ref={ref}
-        className="relative h-16 bg-neutral-800 rounded w-full"
+        className="relative flex h-16 bg-neutral-800 rounded w-full cursor-pointer"
         onClick={(e) => {
           const rect = ref.current?.getBoundingClientRect();
           if (!rect) return;
 
           const x = e.clientX - rect.left;
-          setTime(toTime(x));
+          const percent = x / rect.width;
+
+          setTime(percent * total);
         }}
       >
+        {/* 🟩 SEGMENTS */}
         {timeline.map((b, i) => {
-          const start = b.t[0];
-          const end = b.t[1];
-
-          const left = toPx(start);
-          const width = Math.max(12, toPx(end) - toPx(start));
+          const duration = b.t[1] - b.t[0];
+          const percent = duration / total;
 
           return (
             <div
@@ -94,34 +82,24 @@ export default function Timeline() {
                 e.stopPropagation();
                 selectBlock(i);
               }}
-              className={`absolute top-0 h-full ${
+              className={`h-full ${
                 COLORS[i % COLORS.length]
               } ${selectedIndex === i ? "outline outline-white" : ""}`}
               style={{
-                left: `${left}px`,
-                width: `${width}px`,
+                flex: `${percent} 0 0`,
+                minWidth: "20px",
               }}
-            >
-              {selectedIndex === i && (
-                <>
-                  <div
-                    className="absolute left-0 top-0 w-2 h-full bg-white cursor-ew-resize"
-                    onMouseDown={drag(i, "start")}
-                  />
-                  <div
-                    className="absolute right-0 top-0 w-2 h-full bg-white cursor-ew-resize"
-                    onMouseDown={drag(i, "end")}
-                  />
-                </>
-              )}
-            </div>
+            />
           );
         })}
 
-        {/* playhead */}
+        {/* 🔴 PLAYHEAD */}
         <div
-          className="absolute top-0 w-[2px] h-full bg-red-500"
-          style={{ left: `${toPx(currentTime)}px` }}
+          className="absolute top-0 h-full w-[2px] bg-red-600 cursor-ew-resize"
+          style={{
+            left: `${getPercent(currentTime)}%`,
+          }}
+          onMouseDown={startDrag}
         />
       </div>
     </div>

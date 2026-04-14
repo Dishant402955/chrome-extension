@@ -6,17 +6,30 @@ export const useEditorStore = create(
     (set) => ({
       timeline: [
         {
-          t: [0, 5],
+          t: [0, 3],
           zoom: { x: 0.5, y: 0.5, scale: 1.5 },
         },
         {
-          t: [5, 10],
+          t: [3, 7],
+          zoom: { x: 0.3, y: 0.4, scale: 2 },
+        },
+                {
+          t: [7, 12],
+          zoom: { x: 0.5, y: 0.5, scale: 1.5 },
+        },
+        {
+          t: [12, 19],
+          zoom: { x: 0.3, y: 0.4, scale: 2 },
+        },
+                {
+          t: [19, 23],
           zoom: { x: 0.3, y: 0.4, scale: 2 },
         },
       ],
 
+      
       selectedIndex: 0,
-      duration: 10,
+      duration: 0,
       currentTime: 0,
       isPlaying: false,
       videoUrl: "/screen.webm",
@@ -82,8 +95,28 @@ export const useEditorStore = create(
           return { timeline: updated };
         }),
     }),
-    {
-      name: "video-editor-store", // 🔥 persistence key
+{
+  name: "video-editor-store",
+  version: 2,
+  migrate: (persistedState: any, version: number) => {
+    // 🔥 force reset when structure changes
+    if (version < 2) {
+      return {
+        timeline: [
+          { t: [0, 3], zoom: { x: 0.5, y: 0.5, scale: 1.5 } },
+          { t: [3, 7], zoom: { x: 0.3, y: 0.4, scale: 2 } },
+          { t: [7, 12], zoom: { x: 0.5, y: 0.5, scale: 1.5 } }
+        ],
+        selectedIndex: 0,
+        duration: 0,
+        currentTime: 0,
+        isPlaying: false,
+        videoUrl: "/screen.webm",
+      };
     }
-  )
+
+    return persistedState;
+  },
+},
+  ),
 );

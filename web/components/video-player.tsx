@@ -97,20 +97,36 @@ export default function VideoPlayer() {
     applyCurrentFrame();
   }, [timeline]);
 
-  // 🔥 SET DURATION
+  useEffect(() => {
+  const v = videoRef.current;
+  if (!v) return;
+
+  if (Math.abs(v.currentTime - currentTime) > 0.05) {
+    v.currentTime = currentTime;
+  }
+}, [currentTime]);
+
+ // 🔥 SET DURATION (FIXED)
 useEffect(() => {
   const v = videoRef.current;
   if (!v) return;
 
-  const handler = () => {
-    if (v.duration && !isNaN(v.duration)) {
-      useEditorStore.getState().setDuration(v.duration);
+  const updateDuration = () => {
+    if (isFinite(v.duration) && v.duration > 0) {
+      setDuration(v.duration);
     }
   };
 
-  v.addEventListener("loadedmetadata", handler);
+  // try immediately
+  updateDuration();
 
-  return () => v.removeEventListener("loadedmetadata", handler);
+  v.addEventListener("loadedmetadata", updateDuration);
+  v.addEventListener("durationchange", updateDuration);
+
+  return () => {
+    v.removeEventListener("loadedmetadata", updateDuration);
+    v.removeEventListener("durationchange", updateDuration);
+  };
 }, []);
 
   // ---------------- SEEK ----------------
