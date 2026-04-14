@@ -33,40 +33,50 @@ export const useEditorStore = create(
       currentTime: 0,
       isPlaying: false,
       videoUrl: "/screen.webm",
-      setRange: (index, range) =>
+     setRange: (index, range) =>
   set((state) => {
     const timeline = [...state.timeline];
-    const block = timeline[index];
 
-    const [oldStart, oldEnd] = block.t;
-    const [newStart, newEnd] = range;
+    let [newStart, newEnd] = range;
 
-    const newTimeline = [];
-
-    // 🔥 LEFT SPLIT
-    if (newStart > oldStart) {
-      newTimeline.push({
-        ...block,
-        t: [oldStart, newStart],
-      });
-    }
-
-    // 🔥 MAIN UPDATED BLOCK
-    newTimeline.push({
-      ...block,
+    // 🔥 update current block
+    timeline[index] = {
+      ...timeline[index],
       t: [newStart, newEnd],
-    });
+    };
 
-    // 🔥 RIGHT SPLIT
-    if (newEnd < oldEnd) {
-      newTimeline.push({
-        ...block,
-        t: [newEnd, oldEnd],
-      });
+    // 🔥 HANDLE RIGHT SIDE (EXPANDING RIGHT)
+    for (let i = index + 1; i < timeline.length; i++) {
+      const [s, e] = timeline[i].t;
+
+      // overlap exists
+      if (s < newEnd) {
+        // shrink from left
+        const updatedStart = newEnd;
+
+        // if fully eaten → collapse
+        if (updatedStart >= e) {
+          timeline[i].t = [e, e]; // zero width (or delete later)
+        } else {
+          timeline[i].t = [updatedStart, e];
+        }
+      }
     }
 
-    // 🔥 replace in timeline
-    timeline.splice(index, 1, ...newTimeline);
+    // 🔥 HANDLE LEFT SIDE (EXPANDING LEFT)
+    for (let i = index - 1; i >= 0; i--) {
+      const [s, e] = timeline[i].t;
+
+      if (e > newStart) {
+        const updatedEnd = newStart;
+
+        if (updatedEnd <= s) {
+          timeline[i].t = [s, s];
+        } else {
+          timeline[i].t = [s, updatedEnd];
+        }
+      }
+    }
 
     return { timeline };
   }),

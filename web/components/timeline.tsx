@@ -4,7 +4,7 @@ import { useRef } from "react";
 import { useEditorStore } from "@/store/editor-store";
 
 const COLORS = [
-  "bg-pink-500",
+  "bg-pink-300",
   "bg-green-500",
   "bg-blue-500",
   "bg-yellow-500",
@@ -17,6 +17,7 @@ export default function Timeline() {
   const timeline = useEditorStore((s) => s.timeline);
   const selectBlock = useEditorStore((s) => s.selectBlock);
   const selectedIndex = useEditorStore((s) => s.selectedIndex);
+  const setRange = useEditorStore((s) => s.setRange);
 
   const currentTime = useEditorStore((s) => s.currentTime);
   const setTime = useEditorStore((s) => s.setTime);
@@ -26,40 +27,50 @@ export default function Timeline() {
       ? Math.max(...timeline.map((b) => b.t[1]))
       : 1;
 
-  // 🔥 convert time → %
   const getPercent = (t: number) => (t / total) * 100;
 
-  // 🔥 DRAG PLAYHEAD
-  const startDrag = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  // 🔥 HANDLE DRAG (SHRINK ONLY)
+  const drag =
+    (index: number, side: "start" | "end") =>
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
 
-    const move = (ev: MouseEvent) => {
-      const rect = ref.current?.getBoundingClientRect();
-      if (!rect) return;
+      const move = (ev: MouseEvent) => {
+        const rect = ref.current?.getBoundingClientRect();
+        if (!rect) return;
 
-      let x = ev.clientX - rect.left;
-      x = Math.max(0, Math.min(x, rect.width));
+        let x = ev.clientX - rect.left;
+        x = Math.max(0, Math.min(x, rect.width));
 
-      const percent = x / rect.width;
-      const time = percent * total;
+        const percent = x / rect.width;
+        const time = percent * total;
 
-      setTime(time);
+        const block = timeline[index];
+        let [start, end] = block.t;
+
+        if (side === "start") {
+          start = Math.min(time, end - 0.1);
+        } else {
+          end = Math.max(time, start + 0.1);
+        }
+
+        setRange(index, [start, end]);
+      };
+
+      const up = () => {
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+      };
+
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
     };
-
-    const up = () => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-    };
-
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  };
 
   return (
     <div className="bg-neutral-900 text-white p-3 w-full">
       <div
         ref={ref}
-        className="relative flex h-16 bg-neutral-800 rounded w-full cursor-pointer"
+        className="relative  h-16 bg-neutral-800 rounded w-full cursor-pointer"
         onClick={(e) => {
           const rect = ref.current?.getBoundingClientRect();
           if (!rect) return;
@@ -70,28 +81,45 @@ export default function Timeline() {
           setTime(percent * total);
         }}
       >
-        {/* 🟩 SEGMENTS */}
-        {timeline.map((b, i) => {
-          const duration = b.t[1] - b.t[0];
-          const percent = duration / total;
+{/* SEGMENTS */}
+{timeline.map((b, i) => {
+  const left = (b.t[0] / total) * 100;
+  const width = ((b.t[1] - b.t[0]) / total) * 100;
 
-          return (
-            <div
-              key={i}
-              onClick={(e) => {
-                e.stopPropagation();
-                selectBlock(i);
-              }}
-              className={`h-full ${
-                COLORS[i % COLORS.length]
-              } ${selectedIndex === i ? "outline outline-white" : ""}`}
-              style={{
-                flex: `${percent} 0 0`,
-                minWidth: "20px",
-              }}
-            />
-          );
-        })}
+  return (
+    <div
+      key={i}
+      onClick={(e) => {
+        e.stopPropagation();
+        selectBlock(i);
+      }}
+      className={`absolute top-0 h-full ${
+        COLORS[i % COLORS.length]
+      } ${selectedIndex === i ? "outline outline-white" : ""}`}
+      style={{
+        left: `${left}%`,
+        width: `${width}%`,
+        minWidth: "10px",
+      }}
+    >
+      {selectedIndex === i && (
+        <>
+          {/* LEFT STICK */}
+          <div
+            className="absolute left-0 top-0 w-2 h-full bg-white cursor-ew-resize"
+            onMouseDown={drag(i, "start")}
+          />
+
+          {/* RIGHT STICK */}
+          <div
+            className="absolute right-0 top-0 w-2 h-full bg-white cursor-ew-resize"
+            onMouseDown={drag(i, "end")}
+          />
+        </>
+      )}
+    </div>
+  );
+})}
 
         {/* 🔴 PLAYHEAD */}
         <div
@@ -99,7 +127,6 @@ export default function Timeline() {
           style={{
             left: `${getPercent(currentTime)}%`,
           }}
-          onMouseDown={startDrag}
         />
       </div>
     </div>
