@@ -71,15 +71,42 @@ export default function Timeline() {
       <div
         ref={ref}
         className="relative  h-16 bg-neutral-800 rounded w-full cursor-pointer"
-        onClick={(e) => {
-          const rect = ref.current?.getBoundingClientRect();
-          if (!rect) return;
+onClick={(e) => {
+  const rect = ref.current?.getBoundingClientRect();
+  if (!rect) return;
 
-          const x = e.clientX - rect.left;
-          const percent = x / rect.width;
+  const x = e.clientX - rect.left;
+  const percent = x / rect.width;
+  const time = percent * total;
 
-          setTime(percent * total);
-        }}
+  // 🔥 check if clicked inside any segment
+  const foundIndex = timeline.findIndex(
+    (b) => time >= b.t[0] && time <= b.t[1]
+  );
+
+  if (foundIndex !== -1) {
+    // normal behavior
+    setTime(time);
+    return;
+  }
+
+  // 🔥 CLICKED EMPTY / ORPHAN SPACE
+  const newSegment = {
+    t: [time, time + 0.5], // small default size
+    zoom: { x: 0, y: 0, scale: 1 },
+    blur: { x: 0, y: 0, w: 0, h: 0 },
+    shadow: { x: 0, y: 0, w: 0, h: 0 },
+    orphan: false,
+  };
+
+  const updated = [...timeline, newSegment];
+
+  // 🔥 sort by time so timeline doesn't become garbage
+  updated.sort((a, b) => a.t[0] - b.t[0]);
+
+  useEditorStore.getState().setTimeline(updated);
+  useEditorStore.getState().selectBlock(updated.length - 1);
+}}
       >
 {/* SEGMENTS */}
 {timeline.map((b, i) => {

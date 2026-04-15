@@ -75,6 +75,42 @@ export default function VideoPlayer() {
     tY = Math.min(0, Math.max(minY, tY));
 
     video.style.transform = `translate(${tX}px, ${tY}px) scale(${scale})`;
+  
+    // ===== BLUR =====
+const blurBox = document.getElementById("blur-box");
+
+if (active.blur && blurBox) {
+  const { x, y, w, h } = active.blur;
+
+  blurBox.style.display = "block";
+  blurBox.style.left = `${x * 100 - (w * 100) / 2}%`;
+  blurBox.style.top = `${y * 100 - (h * 100) / 2}%`;
+  blurBox.style.width = `${w * 100}%`;
+  blurBox.style.height = `${h * 100}%`;
+} else if (blurBox) {
+  blurBox.style.display = "none";
+}
+
+
+// ===== SPOTLIGHT =====
+const shadow = document.getElementById("shadow-box");
+
+if (active.shadow && shadow) {
+  const { x, y, w, h } = active.shadow;
+
+  shadow.style.display = "block";
+
+  // fake spotlight using radial gradient
+  shadow.style.background = `
+    radial-gradient(
+      circle at ${x * 100}% ${y * 100}%,
+      transparent ${w * 100}%,
+      rgba(0,0,0,0.7) ${w * 100 + 1}%
+    )
+  `;
+} else if (shadow) {
+  shadow.style.display = "none";
+}
   };
 
   // 🔥 TIME UPDATE
@@ -170,7 +206,17 @@ useEffect(() => {
         src={videoUrl}
         className="w-full h-full object-contain transition-transform duration-300 origin-top-left"
       />
+      {/* BLUR OVERLAY */}
+<div
+  id="blur-box"
+  className="absolute hidden backdrop-blur-md pointer-events-none"
+/>
 
+{/* SPOTLIGHT OVERLAY */}
+<div
+  id="shadow-box"
+  className="absolute inset-0 hidden pointer-events-none"
+/>
       {showControls && (
         <div
           className="absolute bottom-0 left-0 w-full bg-black/60 p-3 flex items-center gap-3"
