@@ -5,6 +5,7 @@ import { useEditorStore } from "@/store/editor-store";
 
 export default function VideoPlayer() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const webcamRef = useRef<HTMLVideoElement>(null);
 
   const timeline = useEditorStore((s) => s.timeline);
   const videoUrl = useEditorStore((s) => s.videoUrl);
@@ -19,13 +20,22 @@ export default function VideoPlayer() {
   const [showControls, setShowControls] = useState(true);
   const hideTimer = useRef<any>(null);
 
+  // 🎥 fake webcam source (replace later with real stream if you want)
+  const webcamUrl = "/screen.webm";
+
   // ---------------- PLAY / PAUSE ----------------
   useEffect(() => {
     const v = videoRef.current;
+    const w = webcamRef.current;
     if (!v) return;
 
-    if (isPlaying) v.play().catch(() => {});
-    else v.pause();
+    if (isPlaying) {
+      v.play().catch(() => {});
+      w?.play().catch(() => {});
+    } else {
+      v.pause();
+      w?.pause();
+    }
   }, [isPlaying]);
 
   // ---------------- CORE APPLY ----------------
@@ -35,23 +45,23 @@ export default function VideoPlayer() {
 
     const t = video.currentTime;
 
-let active = timeline[0];
-let activeIndex = 0;
+    let active = timeline[0];
+    let activeIndex = 0;
 
-for (let i = 0; i < timeline.length; i++) {
-  const b = timeline[i];
-  if (t >= b.t[0] && t <= b.t[1]) {
-    active = b;
-    activeIndex = i;
-    break;
-  }
-}
+    for (let i = 0; i < timeline.length; i++) {
+      const b = timeline[i];
+      if (t >= b.t[0] && t <= b.t[1]) {
+        active = b;
+        activeIndex = i;
+        break;
+      }
+    }
 
-// 🔥 AUTO SELECT SEGMENT
-const currentSelected = useEditorStore.getState().selectedIndex;
-if (currentSelected !== activeIndex) {
-  useEditorStore.getState().selectBlock(activeIndex);
-}
+    // 🔥 AUTO SELECT SEGMENT
+    const currentSelected = useEditorStore.getState().selectedIndex;
+    if (currentSelected !== activeIndex) {
+      useEditorStore.getState().selectBlock(activeIndex);
+    }
 
     // ================= ZOOM =================
     if (!active.zoom) {
@@ -82,54 +92,62 @@ if (currentSelected !== activeIndex) {
       }
     }
 
-const topEl = document.getElementById("blur-top");
-const bottomEl = document.getElementById("blur-bottom");
-const leftEl = document.getElementById("blur-left");
-const rightEl = document.getElementById("blur-right");
+    // ================= WEBCAM =================
+    const webcam = webcamRef.current;
 
-if (active.blur && topEl && bottomEl && leftEl && rightEl) {
-  const { x, y, w, h } = active.blur;
+    if (active.webcam && webcam) {
+      const { x, y, w, h } = active.webcam;
 
-  const left = x - w / 2;
-  const right = x + w / 2;
-  const top = y - h / 2;
-  const bottom = y + h / 2;
+      webcam.style.display = "block";
 
-  // SHOW ALL
-  [topEl, bottomEl, leftEl, rightEl].forEach(el => {
-    el.style.display = "block";
-  });
+      webcam.style.width = `${w * 100}%`;
+      webcam.style.height = `${h * 100}%`;
 
-  // TOP
-  topEl.style.left = "0%";
-  topEl.style.top = "0%";
-  topEl.style.width = "100%";
-  topEl.style.height = `${top * 100}%`;
+      webcam.style.left = `${(x - w / 2) * 100}%`;
+      webcam.style.top = `${(y - h / 2) * 100}%`;
+    } else if (webcam) {
+      webcam.style.display = "none";
+    }
 
-  // BOTTOM
-  bottomEl.style.left = "0%";
-  bottomEl.style.top = `${bottom * 100}%`;
-  bottomEl.style.width = "100%";
-  bottomEl.style.height = `${(1 - bottom) * 100}%`;
+    // ================= BLUR =================
+    const topEl = document.getElementById("blur-top");
+    const bottomEl = document.getElementById("blur-bottom");
+    const leftEl = document.getElementById("blur-left");
+    const rightEl = document.getElementById("blur-right");
 
-  // LEFT
-  leftEl.style.left = "0%";
-  leftEl.style.top = `${top * 100}%`;
-  leftEl.style.width = `${left * 100}%`;
-  leftEl.style.height = `${h * 100}%`;
+    if (active.blur && topEl && bottomEl && leftEl && rightEl) {
+      const { x, y, w, h } = active.blur;
 
-  // RIGHT
-  rightEl.style.left = `${right * 100}%`;
-  rightEl.style.top = `${top * 100}%`;
-  rightEl.style.width = `${(1 - right) * 100}%`;
-  rightEl.style.height = `${h * 100}%`;
+      const left = x - w / 2;
+      const right = x + w / 2;
+      const top = y - h / 2;
+      const bottom = y + h / 2;
 
-} else {
-  ["blur-top", "blur-bottom", "blur-left", "blur-right"].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.style.display = "none";
-  });
-}
+      [topEl, bottomEl, leftEl, rightEl].forEach((el) => {
+        el.style.display = "block";
+      });
+
+      topEl.style.height = `${top * 100}%`;
+      bottomEl.style.top = `${bottom * 100}%`;
+      bottomEl.style.height = `${(1 - bottom) * 100}%`;
+
+      leftEl.style.width = `${left * 100}%`;
+      leftEl.style.top = `${top * 100}%`;
+      leftEl.style.height = `${h * 100}%`;
+
+      rightEl.style.left = `${right * 100}%`;
+      rightEl.style.width = `${(1 - right) * 100}%`;
+      rightEl.style.top = `${top * 100}%`;
+      rightEl.style.height = `${h * 100}%`;
+    } else {
+      ["blur-top", "blur-bottom", "blur-left", "blur-right"].forEach(
+        (id) => {
+          const el = document.getElementById(id);
+          if (el) el.style.display = "none";
+        }
+      );
+    }
+
     // ================= SPOTLIGHT =================
     const shadowLayer = document.getElementById("shadow-layer");
 
@@ -137,7 +155,6 @@ if (active.blur && topEl && bottomEl && leftEl && rightEl) {
       const { x, y, w } = active.shadow;
 
       shadowLayer.style.display = "block";
-
       shadowLayer.style.background = `
         radial-gradient(
           circle at ${x * 100}% ${y * 100}%,
@@ -164,12 +181,10 @@ if (active.blur && topEl && bottomEl && leftEl && rightEl) {
     return () => v.removeEventListener("timeupdate", update);
   }, [timeline]);
 
-  // 🔥 CRITICAL FIX (PAUSE + SLIDER)
   useEffect(() => {
     applyCurrentFrame();
   }, [timeline, currentTime]);
 
-  // 🔥 SYNC VIDEO SEEK
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -191,7 +206,6 @@ if (active.blur && topEl && bottomEl && leftEl && rightEl) {
     };
 
     updateDuration();
-
     v.addEventListener("loadedmetadata", updateDuration);
     v.addEventListener("durationchange", updateDuration);
 
@@ -235,30 +249,33 @@ if (active.blur && topEl && bottomEl && leftEl && rightEl) {
       onMouseMove={show}
       onMouseEnter={stay}
     >
-      {/* VIDEO */}
+      {/* MAIN VIDEO */}
       <video
         ref={videoRef}
         src={videoUrl}
         className="w-full h-full object-contain transition-transform duration-300 origin-top-left"
       />
 
-<div id="blur-top" className="absolute hidden backdrop-blur-md pointer-events-none" />
-<div id="blur-bottom" className="absolute hidden backdrop-blur-md pointer-events-none" />
-<div id="blur-left" className="absolute hidden backdrop-blur-md pointer-events-none" />
-<div id="blur-right" className="absolute hidden backdrop-blur-md pointer-events-none" />
-
-      {/* 🔥 SPOTLIGHT */}
-      <div
-        id="shadow-layer"
-        className="absolute inset-0 hidden pointer-events-none"
+      {/* 🎥 WEBCAM OVERLAY */}
+      <video
+        ref={webcamRef}
+        src={"/webcam.webm"}
+        className="absolute hidden object-cover rounded-md border border-white/30"
+        muted
       />
+
+      {/* BLUR */}
+      <div id="blur-top" className="absolute hidden backdrop-blur-md pointer-events-none" />
+      <div id="blur-bottom" className="absolute hidden backdrop-blur-md pointer-events-none" />
+      <div id="blur-left" className="absolute hidden backdrop-blur-md pointer-events-none" />
+      <div id="blur-right" className="absolute hidden backdrop-blur-md pointer-events-none" />
+
+      {/* SPOTLIGHT */}
+      <div id="shadow-layer" className="absolute inset-0 hidden pointer-events-none" />
 
       {/* CONTROLS */}
       {showControls && (
-        <div
-          className="absolute bottom-0 left-0 w-full bg-black/60 p-3 flex items-center gap-3"
-          onMouseEnter={stay}
-        >
+        <div className="absolute bottom-0 left-0 w-full bg-black/60 p-3 flex items-center gap-3">
           <button
             onClick={toggle}
             className="text-white px-3 py-1 bg-white/20 rounded"
