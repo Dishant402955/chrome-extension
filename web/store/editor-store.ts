@@ -26,8 +26,15 @@ export const useEditorStore = create(
           zoom: { x: 0.3, y: 0.4, scale: 2 },
         },
       ],
+setFullState: (data) =>
+  set(() => ({
+    timeline: data.timeline || [],
+    selectedIndex: 0,
+    currentTime: 0,
+  })),
 
-      
+setVideoUrl: (url) => set({ videoUrl: url })
+      ,
       selectedIndex: 0,
       duration: 0,
       currentTime: 0,
