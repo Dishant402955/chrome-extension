@@ -32,7 +32,61 @@ setFullState: (data) =>
     selectedIndex: 0,
     currentTime: 0,
   })),
+updateBlur: (blur) =>
+  set((state) => {
+    const updated = [...state.timeline];
+    const b = updated[state.selectedIndex];
 
+    updated[state.selectedIndex] = {
+      ...b,
+      blur: { ...(b.blur || {}), ...blur },
+    };
+
+    return { timeline: updated };
+  }),
+
+toggleBlur: (enabled) =>
+  set((state) => {
+    const updated = [...state.timeline];
+    const b = updated[state.selectedIndex];
+
+    updated[state.selectedIndex] = {
+      ...b,
+      blur: enabled
+        ? b.blur || { x: 0.5, y: 0.5, w: 0.3, h: 0.3 }
+        : undefined,
+    };
+
+    return { timeline: updated };
+  }),
+
+updateShadow: (shadow) =>
+  set((state) => {
+    const updated = [...state.timeline];
+    const b = updated[state.selectedIndex];
+
+    updated[state.selectedIndex] = {
+      ...b,
+      shadow: { ...(b.shadow || {}), ...shadow },
+    };
+
+    return { timeline: updated };
+  }),
+
+toggleShadow: (enabled) =>
+  set((state) => {
+    const updated = [...state.timeline];
+    const b = updated[state.selectedIndex];
+
+    updated[state.selectedIndex] = {
+      ...b,
+      shadow: enabled
+        ? b.shadow || { x: 0.5, y: 0.5, w: 0.3 }
+        : undefined,
+    };
+
+    return { timeline: updated };
+  }),
 setVideoUrl: (url) => set({ videoUrl: url })
       ,
       selectedIndex: 0,

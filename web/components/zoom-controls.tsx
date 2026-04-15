@@ -2,103 +2,115 @@
 
 import { useEditorStore } from "@/store/editor-store";
 
-export default function Controls() {
+export default function ZoomControls() {
   const timeline = useEditorStore((s) => s.timeline);
   const selectedIndex = useEditorStore((s) => s.selectedIndex);
-  const setTimeline = useEditorStore((s) => s.setTimeline);
 
-  const seg = timeline[selectedIndex];
+  const updateZoom = useEditorStore((s) => s.updateZoom);
+  const updateBlur = useEditorStore((s) => s.updateBlur);
+  const toggleBlur = useEditorStore((s) => s.toggleBlur);
 
-  const update = (key: string, value: any) => {
-    const updated = [...timeline];
+  const updateShadow = useEditorStore((s) => s.updateShadow);
+  const toggleShadow = useEditorStore((s) => s.toggleShadow);
 
-    updated[selectedIndex] = {
-      ...seg,
-      [key]: {
-        ...(seg[key] || {}),
-        ...value,
-      },
-    };
+  const segment = timeline[selectedIndex];
 
-    setTimeline(updated);
-  };
+  const zoom = segment.zoom || { x: 0.5, y: 0.5, scale: 1 };
+  const blur = segment.blur;
+  const shadow = segment.shadow;
+
+  const Slider = ({ label, value, min, max, step, onChange }) => (
+    <div className="space-y-1">
+      <div className="flex justify-between text-xs text-gray-300">
+        <span>{label}</span>
+        <span>{value.toFixed(2)}</span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full accent-blue-500 cursor-pointer"
+      />
+    </div>
+  );
 
   return (
-    <div className="w-72 p-4 bg-neutral-900 text-white space-y-6 overflow-y-auto">
+    <div className="w-72 p-4 bg-neutral-900 text-white space-y-6 border-l border-neutral-700 overflow-y-auto">
 
-      {/* -------- ZOOM -------- */}
+      {/* ================= ZOOM ================= */}
       <div>
-        <p className="text-sm mb-2 opacity-70">ZOOM</p>
+        <h2 className="text-sm font-semibold mb-2">Zoom</h2>
 
-        <label>Scale</label>
-        <input type="range" min={1} max={4} step={0.01}
-          value={seg.zoom?.scale || 1}
-          onChange={(e) => update("zoom", { scale: +e.target.value })}
-        />
+        <Slider label="Scale" value={zoom.scale} min={1} max={4} step={0.01}
+          onChange={(v) => updateZoom({ scale: v })} />
 
-        <label>X</label>
-        <input type="range" min={0} max={1} step={0.001}
-          value={seg.zoom?.x || 0.5}
-          onChange={(e) => update("zoom", { x: +e.target.value })}
-        />
+        <Slider label="X" value={zoom.x} min={0} max={1} step={0.001}
+          onChange={(v) => updateZoom({ x: v })} />
 
-        <label>Y</label>
-        <input type="range" min={0} max={1} step={0.001}
-          value={seg.zoom?.y || 0.5}
-          onChange={(e) => update("zoom", { y: +e.target.value })}
-        />
+        <Slider label="Y" value={zoom.y} min={0} max={1} step={0.001}
+          onChange={(v) => updateZoom({ y: v })} />
       </div>
 
-      {/* -------- BLUR -------- */}
+      {/* ================= BLUR ================= */}
       <div>
-        <p className="text-sm mb-2 opacity-70">BLUR REGION (keeps clear)</p>
+        <div className="flex justify-between items-center mb-2">
+          <h2 className="text-sm font-semibold">Blur</h2>
+          <button
+            onClick={() => toggleBlur(!blur)}
+            className={`px-2 py-1 text-xs rounded ${
+              blur ? "bg-red-600" : "bg-green-600"
+            }`}
+          >
+            {blur ? "OFF" : "ON"}
+          </button>
+        </div>
 
-        <label>X</label>
-        <input type="range" min={0} max={1} step={0.01}
-          value={seg.blur?.x || 0.5}
-          onChange={(e) => update("blur", { x: +e.target.value })}
-        />
+        {blur && (
+          <div className="space-y-3">
+            <Slider label="Center X" value={blur.x} min={0} max={1} step={0.001}
+              onChange={(v) => updateBlur({ x: v })} />
 
-        <label>Y</label>
-        <input type="range" min={0} max={1} step={0.01}
-          value={seg.blur?.y || 0.5}
-          onChange={(e) => update("blur", { y: +e.target.value })}
-        />
+            <Slider label="Center Y" value={blur.y} min={0} max={1} step={0.001}
+              onChange={(v) => updateBlur({ y: v })} />
 
-        <label>Width</label>
-        <input type="range" min={0} max={1} step={0.01}
-          value={seg.blur?.w || 0.2}
-          onChange={(e) => update("blur", { w: +e.target.value })}
-        />
+            <Slider label="Width" value={blur.w} min={0.05} max={1} step={0.01}
+              onChange={(v) => updateBlur({ w: v })} />
 
-        <label>Height</label>
-        <input type="range" min={0} max={1} step={0.01}
-          value={seg.blur?.h || 0.2}
-          onChange={(e) => update("blur", { h: +e.target.value })}
-        />
+            <Slider label="Height" value={blur.h} min={0.05} max={1} step={0.01}
+              onChange={(v) => updateBlur({ h: v })} />
+          </div>
+        )}
       </div>
 
-      {/* -------- SPOTLIGHT -------- */}
+      {/* ================= SPOTLIGHT ================= */}
       <div>
-        <p className="text-sm mb-2 opacity-70">SPOTLIGHT</p>
+        <div className="flex justify-between items-center mb-2">
+          <h2 className="text-sm font-semibold">Spotlight</h2>
+          <button
+            onClick={() => toggleShadow(!shadow)}
+            className={`px-2 py-1 text-xs rounded ${
+              shadow ? "bg-red-600" : "bg-green-600"
+            }`}
+          >
+            {shadow ? "OFF" : "ON"}
+          </button>
+        </div>
 
-        <label>X</label>
-        <input type="range" min={0} max={1} step={0.01}
-          value={seg.shadow?.x || 0.5}
-          onChange={(e) => update("shadow", { x: +e.target.value })}
-        />
+        {shadow && (
+          <div className="space-y-3">
+            <Slider label="Center X" value={shadow.x} min={0} max={1} step={0.001}
+              onChange={(v) => updateShadow({ x: v })} />
 
-        <label>Y</label>
-        <input type="range" min={0} max={1} step={0.01}
-          value={seg.shadow?.y || 0.5}
-          onChange={(e) => update("shadow", { y: +e.target.value })}
-        />
+            <Slider label="Center Y" value={shadow.y} min={0} max={1} step={0.001}
+              onChange={(v) => updateShadow({ y: v })} />
 
-        <label>Radius</label>
-        <input type="range" min={0} max={1} step={0.01}
-          value={seg.shadow?.w || 0.3}
-          onChange={(e) => update("shadow", { w: +e.target.value })}
-        />
+            <Slider label="Radius" value={shadow.w} min={0.05} max={1} step={0.01}
+              onChange={(v) => updateShadow({ w: v })} />
+          </div>
+        )}
       </div>
 
     </div>

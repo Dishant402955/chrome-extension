@@ -35,15 +35,23 @@ export default function VideoPlayer() {
 
     const t = video.currentTime;
 
-    let active = timeline[0];
+let active = timeline[0];
+let activeIndex = 0;
 
-    for (let i = 0; i < timeline.length; i++) {
-      const b = timeline[i];
-      if (t >= b.t[0] && t <= b.t[1]) {
-        active = b;
-        break;
-      }
-    }
+for (let i = 0; i < timeline.length; i++) {
+  const b = timeline[i];
+  if (t >= b.t[0] && t <= b.t[1]) {
+    active = b;
+    activeIndex = i;
+    break;
+  }
+}
+
+// 🔥 AUTO SELECT SEGMENT
+const currentSelected = useEditorStore.getState().selectedIndex;
+if (currentSelected !== activeIndex) {
+  useEditorStore.getState().selectBlock(activeIndex);
+}
 
     // ================= ZOOM =================
     if (!active.zoom) {
