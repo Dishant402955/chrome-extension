@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recorder</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #111213;
+      --surface:    #1c1d1f;
+      --surface2:   #242527;
+      --border:     #2e3033;
+      --border-hi:  #404347;
+      --accent:     #e03131;
+      --accent-dim: #7a1a1a;
+      --green:      #2d9a44;
+      --text:       #c4c6ca;
+      --text-dim:   #5a5d63;
+      --text-hi:    #eceef1;
+      --mono:       ui-monospace, 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    /* ── Layout ── */
+    .shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    .hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .hdr-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .logo {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+    .logo.live {
+      animation: pulse 1s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(224,49,49,0.6); }
+      50%       { opacity: 0.7; box-shadow: 0 0 0 5px rgba(224,49,49,0); }
+    }
+    .hdr-title {
+      color: var(--text-hi);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .hdr-ver {
+      color: var(--text-dim);
+      font-size: 9px;
+    }
+    .btn-icon {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 11px;
+      cursor: pointer;
+      padding: 3px 7px;
+      transition: border-color .15s, color .15s;
+    }
+    .btn-icon:hover { border-color: var(--border-hi); color: var(--text); }
+
+    /* ── Scroll body ── */
+    .body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .body::-webkit-scrollbar { width: 4px; }
+    .body::-webkit-scrollbar-track { background: transparent; }
+    .body::-webkit-scrollbar-thumb { background: var(--border); }
+
+    /* ── Section label ── */
+    .label {
+      color: var(--text-dim);
+      font-size: 9px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    /* ── Tab list ── */
+    .tab-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .tab-list::-webkit-scrollbar { width: 3px; }
+    .tab-list::-webkit-scrollbar-track { background: transparent; }
+    .tab-list::-webkit-scrollbar-thumb { background: var(--border); }
+
+    .tab-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background .1s, border-color .1s;
+      user-select: none;
+    }
+    .tab-item:hover {
+      background: var(--surface2);
+      border-color: var(--border);
+    }
+    .tab-item.selected {
+      background: var(--surface2);
+      border-color: var(--accent-dim);
+    }
+    .tab-item.selected .tab-indicator { opacity: 1; }
+    .tab-indicator {
+      width: 2px;
+      height: 14px;
+      background: var(--accent);
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .tab-fav {
+      width: 14px; height: 14px;
+      flex-shrink: 0;
+      object-fit: contain;
+    }
+    .tab-fav-placeholder {
+      width: 14px; height: 14px;
+      flex-shrink: 0;
+      border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--text-dim);
+      font-size: 8px;
+    }
+    .tab-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .tab-title {
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tab-url {
+      color: var(--text-dim);
+      font-size: 9px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tab-empty {
+      padding: 10px 8px;
+      color: var(--text-dim);
+      font-size: 10px;
+    }
+
+    /* ── Divider ── */
+    .divider {
+      height: 1px;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+
+    /* ── Quality ── */
+    .quality-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .q-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background .1s, border-color .1s;
+      user-select: none;
+    }
+    .q-item:hover { background: var(--surface2); border-color: var(--border); }
+    .q-item.selected {
+      background: var(--surface2);
+      border-color: var(--border-hi);
+    }
+    .q-dot {
+      width: 8px; height: 8px;
+      border: 1px solid var(--text-dim);
+      border-radius: 50%;
+      flex-shrink: 0;
+      transition: background .1s, border-color .1s;
+    }
+    .q-item.selected .q-dot {
+      background: var(--text-hi);
+      border-color: var(--text-hi);
+    }
+    .q-name {
+      color: var(--text-hi);
+      font-size: 11px;
+      min-width: 36px;
+    }
+    .q-desc {
+      color: var(--text-dim);
+      font-size: 9px;
+    }
+
+    /* ── Footer ── */
+    .footer {
+      flex-shrink: 0;
+      padding: 10px 12px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .btn-main {
+      width: 100%;
+      padding: 10px;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      border: 1px solid;
+      cursor: pointer;
+      transition: background .15s, border-color .15s, color .15s, opacity .15s;
+    }
+    .btn-main:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .btn-start {
+      background: transparent;
+      border-color: var(--green);
+      color: var(--green);
+    }
+    .btn-start:not(:disabled):hover {
+      background: var(--green);
+      color: #fff;
+    }
+
+    .btn-stop {
+      background: transparent;
+      border-color: var(--accent);
+      color: var(--accent);
+      animation: border-pulse 1.5s ease-in-out infinite;
+    }
+    .btn-stop:not(:disabled):hover {
+      background: var(--accent);
+      color: #fff;
+    }
+    @keyframes border-pulse {
+      0%, 100% { border-color: var(--accent); }
+      50%       { border-color: var(--accent-dim); }
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .status-text {
+      color: var(--text-dim);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+    }
+    .status-text.live { color: var(--accent); }
+    .status-text.done { color: var(--green); }
+    .status-text.error { color: #f08c00; }
+
+    .timer {
+      color: var(--text-hi);
+      font-size: 13px;
+      letter-spacing: 0.06em;
+      font-feature-settings: "tnum";
+    }
+
+    /* ── Recording overlay state ── */
+    .recording-info {
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+    }
+    .recording-info.visible { display: flex; }
+    .ri-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .ri-key { color: var(--text-dim); font-size: 9px; }
+    .ri-val { color: var(--text-hi); font-size: 10px; }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- Header -->
+  <div class="hdr">
+    <div class="hdr-left">
+      <div class="logo" id="logo"></div>
+      <span class="hdr-title">Recorder</span>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <span class="hdr-ver">v2.0</span>
+      <button class="btn-icon" id="btnRefresh" title="Refresh tab list">↺</button>
+    </div>
+  </div>
+
+  <!-- Body -->
+  <div class="body" id="idleView">
+
+    <!-- Tab picker -->
+    <div>
+      <div class="label">Capture Tab</div>
+      <div class="tab-list" id="tabList">
+        <div class="tab-empty">Loading tabs…</div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Quality -->
+    <div>
+      <div class="label">Quality</div>
+      <div class="quality-list" id="qualityList">
+        <!-- Injected by JS -->
+      </div>
+    </div>
+
+    <!-- Recording info (shown while recording) -->
+    <div class="recording-info" id="recInfo">
+      <div class="ri-row">
+        <span class="ri-key">TAB</span>
+        <span class="ri-val" id="riTab">—</span>
+      </div>
+      <div class="ri-row">
+        <span class="ri-key">QUALITY</span>
+        <span class="ri-val" id="riQuality">—</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="status-bar">
+      <span class="status-text" id="statusText">READY</span>
+      <span class="timer" id="timer"></span>
+    </div>
+    <button class="btn-main btn-start" id="btnStart">▶ &nbsp;Start Recording</button>
+    <button class="btn-main btn-stop"  id="btnStop"  style="display:none">⏹ &nbsp;Stop Recording</button>
+  </div>
+
+</div>
+<script src="sidepanel.js"></script>
+</body>
+</html>

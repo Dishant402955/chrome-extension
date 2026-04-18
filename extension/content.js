@@ -1,46 +1,77 @@
-let localSamples = []
-let localEvents = []
+// ============================================================
+//  content.js — Screen recorder + data collector
+//  No webcam. Quality settings come from START message.
+// ============================================================
 
-let recording = false;
-let startTime = 0;
+let localSamples  = [];
+let localEvents   = [];
+let recording     = false;
+let startTime     = 0;
 
-// streams
-let screenStream = null;
-let webcamStream = null;
-
-// recorders
+let screenStream   = null;
 let screenRecorder = null;
-let webcamRecorder = null;
+let screenChunks   = [];
 
-let screenChunks = [];
-let webcamChunks = [];
+// Mouse state
+let lastX          = 0;
+let lastY          = 0;
+let lastSampleTime = performance.now();
+let recentSamples  = [];
 
-// mouse
-let lastX = 0;
-let lastY = 0;
-let lastTime = performance.now();
-let recentSamples = [];
+// Scroll accumulator (reset each sample tick)
+let scrollAccum   = 0;
+let lastScrollY   = window.scrollY;
 
-// ---------------- ELEMENT CHAIN ----------------
+// Sample interval handle
+let sampleInterval = null;
+
+// ── Safe send ─────────────────────────────────────────────────
+function safeSend(msg) {
+  try {
+    chrome.runtime.sendMessage(msg, () => { void chrome.runtime.lastError; });
+  } catch (_) {}
+}
+
+// ── Element type (mirrors generator logic) ────────────────────
+const TAG_TYPE_MAP = {
+  input: "input", textarea: "input", select: "input",
+  button: "interactive", a: "interactive",
+  nav: "nav", menu: "nav", header: "nav",
+  code: "code", pre: "code",
+  main: "content", article: "content", section: "content", p: "content",
+  form: "form", fieldset: "form",
+  table: "table", thead: "table", tbody: "table", tr: "table", td: "table", th: "table",
+  ul: "list", ol: "list", li: "list",
+  img: "media", video: "media", canvas: "media", svg: "media",
+  dialog: "modal", aside: "modal",
+};
+
+function getElementType(chain) {
+  if (!chain?.length) return "unknown";
+  for (const el of chain) {
+    const tag = (el.tag || "").toLowerCase();
+    if (TAG_TYPE_MAP[tag]) return TAG_TYPE_MAP[tag];
+  }
+  const first = chain[0];
+  if (first?.textLength > 300) return "content";
+  if (first?.textLength > 0 && first?.textLength < 80) return "label";
+  return "generic";
+}
+
+// ── Element chain ─────────────────────────────────────────────
 function getElementChain(el) {
+  if (!el) return [];
   const chain = [];
   let current = el;
-  let depth = 0;
+  let depth   = 0;
 
   while (current && depth < 5) {
     const rect = current.getBoundingClientRect();
-
     chain.push({
-      tag: current.tagName,
-      textLength: (current.innerText || "").length,
-      boundingBox: {
-        x: rect.left,
-        y: rect.top,
-        w: rect.width,
-        h: rect.height
-      }
+      tag:        current.tagName,
+      textLength: (current.innerText || "").trim().length,
+      boundingBox: { x: rect.left, y: rect.top, w: rect.width, h: rect.height }
     });
-
     current = current.parentElement;
     depth++;
   }
@@ -48,201 +79,235 @@ function getElementChain(el) {
   return chain;
 }
 
-// ---------------- SAMPLE ----------------
+// ── Sampling ──────────────────────────────────────────────────
 function sample() {
   if (!recording) return;
 
-  const now = performance.now();
+  const now  = performance.now();
   const time = now - startTime;
 
   const x = lastX / window.innerWidth;
   const y = lastY / window.innerHeight;
 
-  const el = document.elementFromPoint(lastX, lastY);
+  const el    = document.elementFromPoint(lastX, lastY);
   const chain = getElementChain(el);
+  const etype = getElementType(chain);
 
-  const dt = now - lastTime;
-  const dx = lastX - (recentSamples.at(-1)?.rawX || lastX);
-  const dy = lastY - (recentSamples.at(-1)?.rawY || lastY);
+  const dt   = now - lastSampleTime;
+  const prev = recentSamples.at(-1);
+  const dx   = lastX - (prev?.rawX ?? lastX);
+  const dy   = lastY - (prev?.rawY ?? lastY);
 
-  const velocity = Math.sqrt(dx * dx + dy * dy) / (dt || 1);
+  const velocity = dt > 0 ? Math.sqrt(dx * dx + dy * dy) / dt : 0;
 
   const s = {
     time,
     x,
     y,
-    rawX: lastX,
-    rawY: lastY,
+    rawX:        lastX,
+    rawY:        lastY,
     velocity,
-    elementChain: chain
+    elementType: etype,
+    elementChain: chain,
+    scrollDelta: scrollAccum   // accumulated scroll since last sample
   };
+
+  // Reset scroll accumulator
+  scrollAccum = 0;
 
   recentSamples.push(s);
   if (recentSamples.length > 20) recentSamples.shift();
 
   localSamples.push(s);
-  chrome.runtime.sendMessage({ type: "sample", data: s });
+  safeSend({ type: "sample", data: s });
 
-  lastTime = now;
+  lastSampleTime = now;
 }
 
-setInterval(sample, 50);
-
-// ---------------- EVENTS ----------------
+// ── DOM event listeners ───────────────────────────────────────
 document.addEventListener("mousemove", (e) => {
   lastX = e.clientX;
   lastY = e.clientY;
-});
+}, { passive: true });
+
+document.addEventListener("scroll", () => {
+  if (!recording) return;
+  const currentY = window.scrollY;
+  scrollAccum   += currentY - lastScrollY;
+  lastScrollY    = currentY;
+}, { passive: true });
 
 document.addEventListener("click", (e) => {
   if (!recording) return;
 
-  const time = performance.now() - startTime;
+  const chain = getElementChain(document.elementFromPoint(e.clientX, e.clientY));
 
   const eventData = {
-  
-      type: "click",
-      time,
-      x: e.clientX / window.innerWidth,
-      y: e.clientY / window.innerHeight,
-      elementChain: getElementChain(
-        document.elementFromPoint(e.clientX, e.clientY)
-      ),
-      context: [...recentSamples]
-    
-  }
+    type:         "click",
+    time:         performance.now() - startTime,
+    x:            e.clientX / window.innerWidth,
+    y:            e.clientY / window.innerHeight,
+    elementChain: chain,
+    elementType:  getElementType(chain),
+    context:      [...recentSamples]
+  };
 
-  localEvents.push(eventData)
-  chrome.runtime.sendMessage({
-    type:'event',
-    data: eventData
-  });
-
-
-
+  localEvents.push(eventData);
+  safeSend({ type: "event", data: eventData });
 });
 
-// ---------------- HELPER ----------------
+document.addEventListener("keydown", (e) => {
+  if (!recording) return;
+
+  const eventData = {
+    type:      "keydown",
+    time:      performance.now() - startTime,
+    // Mask actual characters — only care about key category
+    keyType:   e.key.length === 1 ? "char"
+             : e.key === "Enter" ? "enter"
+             : e.key === "Backspace" ? "backspace"
+             : e.key === "Tab" ? "tab"
+             : "other",
+    isModifier: e.ctrlKey || e.altKey || e.metaKey
+  };
+
+  localEvents.push(eventData);
+  safeSend({ type: "event", data: eventData });
+}, { passive: true });
+
+document.addEventListener("focusin", (e) => {
+  if (!recording) return;
+
+  const chain = getElementChain(e.target);
+
+  const eventData = {
+    type:         "focus",
+    time:         performance.now() - startTime,
+    elementChain: chain,
+    elementType:  getElementType(chain)
+  };
+
+  localEvents.push(eventData);
+  safeSend({ type: "event", data: eventData });
+}, { passive: true });
+
+// ── Blob → data URL ───────────────────────────────────────────
 function blobToDataURL(blob) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
+    reader.onload  = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("FileReader failed"));
     reader.readAsDataURL(blob);
   });
 }
 
-// ---------------- START / STOP ----------------
+// ── START / STOP ──────────────────────────────────────────────
 chrome.runtime.onMessage.addListener(async (msg) => {
 
+  // ────────────────────── START ──────────────────────────────
   if (msg.type === "START") {
+    const quality = msg.quality || { width: 1280, height: 720, bitrate: 4_000_000 };
 
-    recording = false;
-
-    // get streams
-    screenStream = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
-      audio: true
-    });
-
-    webcamStream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true
-    });
-
-    // safety check
-    if (!webcamStream || webcamStream.getTracks().length === 0) {
-      console.error("Webcam stream is empty");
+    try {
+      screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          width:     { ideal: quality.width  },
+          height:    { ideal: quality.height },
+          frameRate: { ideal: 30 }
+        },
+        audio: false
+      });
+    } catch (err) {
+      safeSend({ type: "CONTENT_ERROR", message: "Screen capture cancelled or denied." });
+      return;
     }
 
-    screenChunks = [];
-    webcamChunks = [];
+    // If user closed the picker without choosing, getDisplayMedia resolves with
+    // an empty stream or ends immediately — guard against it.
+    if (!screenStream || screenStream.getTracks().length === 0) {
+      safeSend({ type: "CONTENT_ERROR", message: "No screen source selected." });
+      return;
+    }
 
-    screenRecorder = new MediaRecorder(screenStream);
-    webcamRecorder = new MediaRecorder(webcamStream);
+    // Handle the user stopping the share via browser UI
+    screenStream.getTracks()[0].onended = () => {
+      if (recording) safeSend({ type: "STOP" });
+    };
+
+    // Reset state
+    localSamples  = [];
+    localEvents   = [];
+    screenChunks  = [];
+    recentSamples = [];
+    scrollAccum   = 0;
+    lastScrollY   = window.scrollY;
+
+    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+      ? "video/webm;codecs=vp9"
+      : "video/webm";
+
+    screenRecorder = new MediaRecorder(screenStream, {
+      mimeType,
+      videoBitsPerSecond: quality.bitrate
+    });
 
     screenRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) screenChunks.push(e.data);
     };
 
-    webcamRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) webcamChunks.push(e.data);
-    };
-
-    // 🔥 force chunk emission
     screenRecorder.start(1000);
-    webcamRecorder.start(1000);
 
-    startTime = performance.now();
+    startTime      = performance.now();
+    lastSampleTime = startTime;
+    recording      = true;
 
-    chrome.runtime.sendMessage({
-      type: "INIT",
-      data: {
-        viewport: {
-          width: window.innerWidth,
-          height: window.innerHeight
-        }
-      }
+    // Start sample loop
+    if (sampleInterval) clearInterval(sampleInterval);
+    sampleInterval = setInterval(sample, 50);
+
+    safeSend({
+      type: "RECORDING_STARTED",
+      data: { viewport: { width: window.innerWidth, height: window.innerHeight } }
     });
 
-    recording = true;
-    console.log("Recording started (screen + webcam)");
+    console.log("[Recorder] Started —", mimeType, quality);
   }
 
+  // ────────────────────── STOP ───────────────────────────────
   if (msg.type === "STOP") {
+    if (!recording) return;
 
     recording = false;
 
-    // wait for BOTH recorders
-    const stopPromises = [];
+    // Stop sample loop immediately
+    if (sampleInterval) { clearInterval(sampleInterval); sampleInterval = null; }
 
-    stopPromises.push(new Promise(res => {
+    // Wait for recorder to finish flushing
+    await new Promise(res => {
       screenRecorder.onstop = res;
-    }));
-
-    stopPromises.push(new Promise(res => {
-      webcamRecorder.onstop = res;
-    }));
-
-    screenRecorder.stop();
-    webcamRecorder.stop();
-
-    await Promise.all(stopPromises);
-
-    // now safe to build blobs
-    const screenBlob = new Blob(screenChunks, { type: "video/webm" });
-    const webcamBlob = new Blob(webcamChunks, { type: "video/webm" });
-
-    const screenDataUrl = await blobToDataURL(screenBlob);
-    const webcamDataUrl = await blobToDataURL(webcamBlob);
-    const script = generateScript({
-      samples:localSamples,
-      events:localEvents,
-      meta:{
-        viewport:{
-          width:window.innerWidth,
-          height:window.innerHeight
-        }
-      }
-    })
-
-    chrome.runtime.sendMessage({
-      type: "FINAL_DATA",
-      data: {
-        screenDataUrl,
-        webcamDataUrl,
-        script
-      }
+      screenRecorder.stop();
     });
 
-    // 🔥 CRITICAL: stop ALL tracks → fixes webcam staying ON
-    if (screenStream) {
-      screenStream.getTracks().forEach(t => t.stop());
-    }
+    const screenBlob    = new Blob(screenChunks, { type: "video/webm" });
+    const screenDataUrl = await blobToDataURL(screenBlob);
 
-    if (webcamStream) {
-      webcamStream.getTracks().forEach(t => t.stop());
-    }
+    const script = generateScript({
+      samples: localSamples,
+      events:  localEvents,
+      meta:    { viewport: { width: window.innerWidth, height: window.innerHeight } }
+    });
 
-    console.log("Recording fully stopped");
+    safeSend({
+      type: "FINAL_DATA",
+      data: { screenDataUrl, script }
+    });
+
+    // Release screen capture
+    screenStream?.getTracks().forEach(t => t.stop());
+    screenStream = null;
+
+    console.log(
+      `[Recorder] Stopped — ${localSamples.length} samples, ${localEvents.length} events`
+    );
   }
 });

@@ -1,26 +1,25 @@
 {
   "manifest_version": 3,
-  "name": "Recorder Extension",
-  "version": "1.0",
-
+  "name": "Recorder",
+  "version": "2.0",
   "action": {
-    "default_popup": "popup.html"
+    "default_title": "Open Recorder Panel"
   },
-
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
   "permissions": [
     "activeTab",
     "scripting",
     "tabs",
     "storage",
-    "downloads"
+    "downloads",
+    "sidePanel"
   ],
-
   "host_permissions": ["<all_urls>"],
-
   "background": {
     "service_worker": "background.js"
   },
-
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
