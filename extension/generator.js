@@ -1,62 +1,51 @@
 // ============================================================
-//  generator.js — Script Generator v6
+//  generator.js — Script Generator v7 ("dumb" edition)
 //
-//  Input  (fixed):
-//    { samples[], events[], meta:{ viewport:{width,height} } }
-//  Output (fixed):
+//  Concept:
+//    For every sample: look at what element is under the cursor,
+//    use that element's size to pick a scale, use its center
+//    (blended with cursor) as the frame center.
+//    Group consecutive identical-ish targets into one keyframe.
+//    No state machines. No segment breaks. No complex heuristics.
+//
+//  Output format (fixed forever):
 //    [{ t:[startSec,endSec], zoom:{x,y,scale}, webcam:{x,y,w,h} }]
 // ============================================================
 
-const BUCKET_MS = 50; // must match content.js setInterval
-
-// ── Velocity thresholds (normalised px/ms) ────────────────────
-const V_STABLE = 0.04;
-const V_FAST   = 0.18;
-
-// ── Scale ─────────────────────────────────────────────────────
-const SCALE_MIN  = 1.00;
+// ── Tuning ────────────────────────────────────────────────────
+const FILL       = 0.82;   // element fills this fraction of the zoomed frame
 const SCALE_MAX  = 1.75;
-const CARD_FILL  = 0.82;   // card occupies this fraction of zoomed frame
+const SCALE_MIN  = 1.00;
 
-// Scale to use when no card is found — always meaningful, never < 1.30
-const SCALE_BY_STATE = {
-  clicking:   1.65,
-  typing:     1.60,
-  focusing:   1.55,
-  reading:    1.45,
-  navigating: 1.40,
-  idle:       1.35,
-  scrolling:  1.00,
-  moving:     1.00,
-};
+// Element must be at least this fraction of screen to be usable
+// (filters out tiny icons/bullets/decorators)
+const MIN_FRAC   = 0.005;  // 0.5%
 
-// ── Camera ────────────────────────────────────────────────────
-const BLEND = 0.80;   // lerp weight toward new target per keyframe
+// Element must be less than this fraction of screen
+// (filters out full-page scroll containers)
+const MAX_FRAC   = 0.72;
 
-// ── Dedup — only collapse truly identical consecutive holds ───
-const DEDUP_POS   = 0.010;
-const DEDUP_SCALE = 0.020;
+// Dedup: a new keyframe is only emitted when the zoom target
+// changes by more than these amounts from the current keyframe.
+const DEDUP_POS   = 0.025;  // normalised coords (manhattan)
+const DEDUP_SCALE = 0.05;
 
-// ── Y-grid fallback bands ─────────────────────────────────────
-// Only used when findCard returns null AND there is real sample data.
-// Empty buckets are NEVER used for Y-grid breaks.
-const Y_BANDS = 8;
+// Minimum keyframe duration to keep
+const MIN_KF_SEC  = 0.25;
 
-// ── Segment minimum ───────────────────────────────────────────
-const MIN_SEG_MS = 150;
-const MIN_KF_MS  = 250;
-
-// ─── Helpers ─────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────
 function clamp(v, lo = 0.05, hi = 0.95) {
   return Math.max(lo, Math.min(hi, v));
 }
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
+
 function clampCenter(cx, cy, scale) {
   const half = 0.5 / scale;
-  return { x: clamp(cx, half, 1 - half), y: clamp(cy, half, 1 - half) };
+  return {
+    x: clamp(cx, half, 1 - half),
+    y: clamp(cy, half, 1 - half)
+  };
 }
+
 function webcamPos(cx, cy) {
   return {
     x: cx < 0.5 ? 0.78 : 0.00,
@@ -65,393 +54,161 @@ function webcamPos(cx, cy) {
   };
 }
 
-// ── State classifier ─────────────────────────────────────────
-function classifyState(f) {
-  if (f.hasClick)                            return "clicking";
-  if (f.hasKey)                              return "typing";
-  if (f.hasFocus && f.avgV < V_STABLE)       return "focusing";
-  if (f.isScrolling)                         return "scrolling";
-  if (f.avgV >= V_FAST)                      return "moving";
-  if (f.avgV < V_STABLE && f.hasChain)       return "reading";
-  if (f.avgV < V_STABLE)                     return "idle";
-  return "moving";
-}
+// ── Core: element under cursor → zoom target ──────────────────
+//
+// Element selection — walk the chain from chain[0] (the innermost
+// element the cursor is directly over) upward.
+//
+// Pick the FIRST element that is:
+//   • at least MIN_FRAC of screen area  (not a tiny decoration)
+//   • less than MAX_FRAC of screen area (not the page scroll container)
+//
+// This naturally selects:
+//   • An image the cursor is hovering over directly
+//   • A button or list item
+//   • A card/panel if the cursor is over its background
+//
+// Scale is derived so that element fills FILL of the visible frame
+// on its tightest axis. Capped at SCALE_MAX/MIN.
+//
+// Center blends: 80% element center, 20% cursor position.
+// The cursor bias makes the frame feel "pulled toward" where the
+// user is actually looking, while the element anchor prevents drift.
 
-function stateCategory(state) {
-  if (state === "clicking" || state === "typing" || state === "focusing") return "interacting";
-  if (state === "scrolling" || state === "moving")                        return "moving";
-  return "scanning";
-}
+function pointToZoom(point, vp) {
+  const chain  = point.elementChain || [];
+  const screen = vp.width * vp.height;
 
-function yBand(y) {
-  return Math.floor(Math.max(0, Math.min(0.9999, y)) * Y_BANDS);
-}
+  let box = null;
 
-// ── Card finder ───────────────────────────────────────────────
-// Walk up the element chain and find the first element whose
-// parent is PARENT_RATIO× larger in area.
-// That gap = the card boundary (row in a list, panel in a layout, etc.)
-
-const PARENT_RATIO  = 1.60;
-const MIN_CARD_FRAC = 0.005;   // 0.5% of screen minimum
-const MAX_CARD_FRAC = 0.90;    // 90% of screen maximum
-
-function findCard(chain, viewport) {
-  if (!chain?.length) return null;
-  const screen = viewport.width * viewport.height;
-
-  // Pass 1: natural parent-size jump
-  for (let i = 0; i < chain.length; i++) {
-    const box = chain[i].boundingBox;
-    if (!box || box.w <= 0 || box.h <= 0) continue;
-
-    const elFrac = (box.w * box.h) / screen;
-    if (elFrac < MIN_CARD_FRAC) continue;
-    if (elFrac > MAX_CARD_FRAC) continue;
-
-    const parentBox  = chain[i + 1]?.boundingBox;
-    const parentFrac = parentBox ? (parentBox.w * parentBox.h) / screen : 0;
-
-    if (!parentBox || parentBox.w <= 0 || parentBox.h <= 0) {
-      return box; // no parent → this IS the card
-    }
-    if (parentFrac > MAX_CARD_FRAC) {
-      return box; // parent is the page → this IS the card
-    }
-    if ((parentBox.w * parentBox.h) >= (box.w * box.h) * PARENT_RATIO) {
-      return box; // parent is significantly larger → card boundary found
-    }
-  }
-
-  // Pass 2: size-range fallback (3%–65% of screen)
   for (const el of chain) {
-    const box = el.boundingBox;
-    if (!box || box.w <= 0 || box.h <= 0) continue;
-    const frac = (box.w * box.h) / screen;
-    if (frac >= 0.03 && frac < 0.65) return box;
+    const b = el.boundingBox;
+    if (!b || b.w <= 0 || b.h <= 0) continue;
+    const frac = (b.w * b.h) / screen;
+    if (frac >= MIN_FRAC && frac < MAX_FRAC) {
+      box = b;
+      break;
+    }
   }
 
-  return null;
-}
-
-function scaleFromCard(card, viewport) {
-  if (!card) return null;
-  const sw = (viewport.width  * CARD_FILL) / card.w;
-  const sh = (viewport.height * CARD_FILL) / card.h;
-  return Math.min(Math.max(Math.min(sw, sh), SCALE_MIN), SCALE_MAX);
-}
-
-function cardCenter(card, viewport) {
-  if (!card) return null;
-  return {
-    x: (card.x + card.w / 2) / viewport.width,
-    y: (card.y + card.h / 2) / viewport.height
-  };
-}
-
-function layoutBias(cx, cy, card, viewport) {
-  if (!card) return { x: cx, y: cy };
-  let x = cx, y = cy;
-  if (card.x < viewport.width  * 0.18) x += 0.03;
-  if (card.x + card.w > viewport.width  * 0.82) x -= 0.03;
-  if (card.y < viewport.height * 0.10) y += 0.04;
-  return { x: clamp(x), y: clamp(y) };
-}
-
-function computeTarget(state, avgX, avgY, chain, viewport) {
-  if (state === "scrolling" || state === "moving") {
-    return { cx: clamp(avgX), cy: clamp(avgY), scale: SCALE_BY_STATE[state], card: null };
-  }
-
-  const card  = findCard(chain, viewport);
-  const cc    = cardCenter(card, viewport);
   let scale, cx, cy;
 
-  if (card && cc) {
-    scale = scaleFromCard(card, viewport);
-    cx    = lerp(cc.x, avgX, 0.35);   // 65% card, 35% cursor
-    cy    = lerp(cc.y, avgY, 0.35);
-    ;({ x: cx, y: cy } = layoutBias(cx, cy, card, viewport));
+  if (box) {
+    // Fit element into FILL of visible frame on the tighter axis
+    const sw = (vp.width  * FILL) / box.w;
+    const sh = (vp.height * FILL) / box.h;
+    scale = Math.min(Math.max(Math.min(sw, sh), SCALE_MIN), SCALE_MAX);
+
+    // Element center in normalised coords
+    const ecx = (box.x + box.w / 2) / vp.width;
+    const ecy = (box.y + box.h / 2) / vp.height;
+
+    // Blend: 80% element center, 20% cursor
+    // Cursor nudge keeps the frame pointed at where the user looks,
+    // element anchor keeps it stable when cursor drifts slightly.
+    cx = ecx * 0.80 + (point.x || 0.5) * 0.20;
+    cy = ecy * 0.80 + (point.y || 0.5) * 0.20;
+
+    // Layout edge bias: nudge away from fixed chrome (sidebars, navbars)
+    if (box.x < vp.width  * 0.18) cx += 0.03;
+    if (box.x + box.w > vp.width  * 0.82) cx -= 0.03;
+    if (box.y < vp.height * 0.10) cy += 0.04;
+
   } else {
-    scale = SCALE_BY_STATE[state] ?? 1.40;
-    cx    = avgX;
-    cy    = avgY;
+    // No usable element found: follow cursor with a moderate fixed zoom.
+    // This happens when the cursor is over a giant scroll container
+    // or when no chain data is available.
+    scale = 1.40;
+    cx    = point.x || 0.5;
+    cy    = point.y || 0.5;
   }
 
+  // Clamp center so the zoomed frame never shows black edges
   ;({ x: cx, y: cy } = clampCenter(cx, cy, scale));
-  return { cx: clamp(cx), cy: clamp(cy), scale, card };
+
+  return { cx: clamp(cx), cy: clamp(cy), scale };
 }
 
-// ── Card identity comparison ──────────────────────────────────
-const CARD_MOVE_FRAC = 0.50;
+// ── Build sorted timeline of all data points ──────────────────
+// Merges samples and interaction events into one time-sorted list.
+// Events (clicks, focus) carry element chains and get a slight
+// scale boost so interactions visibly zoom in.
 
-function cardChanged(cardA, cardB) {
-  if (!cardA && !cardB) return false;
-  if (!cardA || !cardB) return true;
-
-  const tolW = Math.min(cardA.w, cardB.w) * CARD_MOVE_FRAC;
-  const tolH = Math.min(cardA.h, cardB.h) * CARD_MOVE_FRAC;
-
-  const dCx = Math.abs((cardA.x + cardA.w / 2) - (cardB.x + cardB.w / 2));
-  const dCy = Math.abs((cardA.y + cardA.h / 2) - (cardB.y + cardB.h / 2));
-
-  return dCx > tolW || dCy > tolH;
-}
-
-// ── PHASE 1 — Bucketize ───────────────────────────────────────
-function bucketize(data) {
-  const samples = data.samples || [];
-  const events  = data.events  || [];
-  if (!samples.length && !events.length) return [];
-
-  let maxTime = 0;
-  for (const s of samples) if ((s.time || 0) > maxTime) maxTime = s.time;
-  for (const e of events)  if ((e.time || 0) > maxTime) maxTime = e.time;
-  if (maxTime <= 0) return [];
-
-  const count   = Math.ceil(maxTime / BUCKET_MS) + 1;
-  const buckets = Array.from({ length: count }, (_, i) => ({
-    tStart: i * BUCKET_MS,
-    tEnd:  (i + 1) * BUCKET_MS,
-    samples: [],
-    events:  []
+function buildPoints(samples, events) {
+  const pts = samples.map(s => ({
+    time:         s.time,
+    x:            s.x,
+    y:            s.y,
+    elementChain: s.elementChain,
+    isEvent:      false,
+    boost:        1.0
   }));
 
-  for (const s of samples) {
-    const i = Math.floor((s.time || 0) / BUCKET_MS);
-    if (buckets[i]) buckets[i].samples.push(s);
-  }
   for (const e of events) {
-    const i = Math.floor((e.time || 0) / BUCKET_MS);
-    if (buckets[i]) buckets[i].events.push(e);
-  }
-
-  return buckets;
-}
-
-// ── PHASE 2 — Extract features ────────────────────────────────
-function extractFeatures(buckets) {
-  return buckets.map(b => {
-    const s  = b.samples;
-    const n  = s.length;
-    const ne = b.events.length;
-
-    const avgX = n ? s.reduce((a, x) => a + x.x, 0) / n : 0.5;
-    const avgY = n ? s.reduce((a, x) => a + x.y, 0) / n : 0.5;
-    const avgV = n ? s.reduce((a, x) => a + (x.velocity || 0), 0) / n : 0;
-
-    const totalScroll = n ? s.reduce((a, x) => a + (x.scrollDelta || 0), 0) : 0;
-    const isScrolling = Math.abs(totalScroll) > 30 && avgV >= V_STABLE;
-
-    let dominantChain = null;
-    if (n) {
-      const freq = new Map();
-      for (const x of s) {
-        if (!x.elementChain?.length) continue;
-        const key = JSON.stringify(x.elementChain);
-        freq.set(key, (freq.get(key) || 0) + 1);
-      }
-      if (freq.size) {
-        let best = null, bestN = 0;
-        for (const [k, c] of freq) {
-          if (c > bestN) { best = k; bestN = c; }
-        }
-        dominantChain = JSON.parse(best);
-      }
-    }
-
-    const focusEv = b.events.find(e => e.type === "focus");
-    const clickEv = b.events.find(e => e.type === "click");
-    if (focusEv?.elementChain?.length) dominantChain = focusEv.elementChain;
-    if (clickEv?.elementChain?.length) dominantChain = clickEv.elementChain;
-
-    const hasClick = b.events.some(e => e.type === "click");
-    const hasKey   = b.events.some(e => e.type === "keydown");
-    const hasFocus = b.events.some(e => e.type === "focus");
-
-    return {
-      tStart: b.tStart,
-      tEnd:   b.tEnd,
-      avgX, avgY, avgV,
-      isScrolling,
-      hasClick, hasKey, hasFocus,
-      hasChain:  dominantChain !== null,
-      dominantChain,
-      // ── KEY FLAG ──────────────────────────────────────────
-      // A bucket with no samples AND no events carries zero
-      // information. It must NEVER trigger a segment break.
-      isEmpty: n === 0 && ne === 0,
-      samples: b.samples,
-      events:  b.events
-    };
-  });
-}
-
-// ── PHASE 3 — Create segments ─────────────────────────────────
-//
-// Break conditions (only evaluated on NON-EMPTY buckets):
-//   1. Interaction event (click / focus) — always break
-//   2. State category change (interacting / scanning / moving)
-//   3. Card identity change (card-relative spatial threshold)
-//   4. Y-grid fallback (when both cards null AND real samples exist)
-//
-// Empty buckets (no samples, no events) just silently extend the
-// current segment's tEnd. They are INVISIBLE to break detection.
-// This was the cause of 18 garbage segments from dead air.
-
-function createSegments(features, viewport) {
-  const segs = [];
-  let cur     = null;
-  let curCard = null;
-
-  function startSeg(f, state, card) {
-    curCard = card;
-    return {
-      tStart:   f.tStart,
-      tEnd:     f.tEnd,
-      state,
-      card,
-      hasClick: f.hasClick,
-      hasKey:   f.hasKey,
-      hasFocus: f.hasFocus,
-      isScrolling: f.isScrolling,
-      dominantChain: f.dominantChain,
-      samples:  [...f.samples],
-      events:   [...f.events],
-      _sx: f.avgX, _sy: f.avgY, _sv: f.avgV, _n: 1,
-      _realN: 1   // count of non-empty buckets (for avgY used in Y-grid)
-    };
-  }
-
-  function flush() {
-    if (!cur) return;
-    if (cur.tEnd - cur.tStart >= MIN_SEG_MS) {
-      cur.avgX = cur._sx / cur._n;
-      cur.avgY = cur._sy / cur._n;
-      cur.avgV = cur._sv / cur._n;
-      delete cur._sx; delete cur._sy; delete cur._sv; delete cur._n; delete cur._realN;
-      segs.push(cur);
-    }
-    cur     = null;
-    curCard = null;
-  }
-
-  for (const f of features) {
-    if (!cur) {
-      const state = classifyState(f);
-      const card  = f.isEmpty ? null : findCard(f.dominantChain, viewport);
-      cur = startSeg(f, state, card);
-      continue;
-    }
-
-    // ── EMPTY BUCKET: just extend time, no break check ────
-    if (f.isEmpty) {
-      cur.tEnd = f.tEnd;
-      continue;
-    }
-
-    // ── Non-empty bucket: evaluate break conditions ────────
-    const state = classifyState(f);
-    const card  = findCard(f.dominantChain, viewport);
-
-    const interactionEvent = f.hasClick || f.hasFocus;
-    const categoryChanged  = stateCategory(state) !== stateCategory(cur.state);
-    const cardBreak        = cardChanged(curCard, card);
-
-    // Y-grid fallback: only when BOTH cards are null AND
-    // the running average Y of the current segment is known
-    const curAvgY    = cur._sy / cur._n;
-    const yGridBreak = (!curCard && !card)
-      && (yBand(f.avgY) !== yBand(curAvgY));
-
-    const shouldBreak = interactionEvent || categoryChanged || cardBreak || yGridBreak;
-
-    if (shouldBreak) {
-      flush();
-      cur = startSeg(f, state, card);
-    } else {
-      cur.tEnd        = f.tEnd;
-      cur._sx        += f.avgX;
-      cur._sy        += f.avgY;
-      cur._sv        += f.avgV;
-      cur._n         += 1;
-      cur._realN     += 1;
-
-      if (f.hasClick || f.hasFocus) {
-        cur.state         = state;
-        cur.dominantChain = f.dominantChain || cur.dominantChain;
-        if (card) { cur.card = card; curCard = card; }
-      }
-
-      cur.hasClick    = cur.hasClick    || f.hasClick;
-      cur.hasKey      = cur.hasKey      || f.hasKey;
-      cur.hasFocus    = cur.hasFocus    || f.hasFocus;
-      cur.isScrolling = cur.isScrolling || f.isScrolling;
-      cur.samples     = cur.samples.concat(f.samples);
-      cur.events      = cur.events.concat(f.events);
-    }
-  }
-
-  flush();
-  return segs;
-}
-
-// ── PHASE 4 — Build timeline ──────────────────────────────────
-function buildTimeline(segments, viewport) {
-  const DEFAULT = { x: 0.5, y: 0.5, scale: 1.0 };
-  let prev      = { ...DEFAULT };
-  const out     = [];
-
-  for (const seg of segments) {
-    if (seg.tEnd - seg.tStart < MIN_KF_MS) continue;
-
-    const chain =
-      seg.events.find(e => e.type === "click")?.elementChain ||
-      seg.events.find(e => e.type === "focus")?.elementChain ||
-      seg.dominantChain ||
-      seg.samples[0]?.elementChain;
-
-    const target = computeTarget(seg.state, seg.avgX, seg.avgY, chain, viewport);
-
-    const zoom = {
-      x:     lerp(prev.x,     target.cx,    BLEND),
-      y:     lerp(prev.y,     target.cy,    BLEND),
-      scale: lerp(prev.scale, target.scale, BLEND)
-    };
-
-    prev = zoom;
-    out.push({
-      t:      [seg.tStart / 1000, seg.tEnd / 1000],
-      zoom,
-      webcam: webcamPos(zoom.x, zoom.y)
+    if (e.type !== "click" && e.type !== "focus") continue;
+    pts.push({
+      time:         e.time,
+      x:            e.x || 0.5,
+      y:            e.y || 0.5,
+      elementChain: e.elementChain || [],
+      isEvent:      true,
+      boost:        e.type === "click" ? 1.08 : 1.04  // small nudge upward
     });
   }
 
-  return out;
+  pts.sort((a, b) => a.time - b.time);
+  return pts;
 }
 
-// ── PHASE 5 — Dedup identical holds ──────────────────────────
-function dedup(timeline) {
-  if (!timeline.length) return [];
-  const out  = [{ ...timeline[0], t: [...timeline[0].t] }];
-  const last = () => out[out.length - 1];
+// ── Collapse targets into keyframes ──────────────────────────
+//
+// Each data point produces a zoom target.
+// We emit a new keyframe only when the target moves MORE than
+// DEDUP thresholds from the CURRENT keyframe's zoom.
+// Otherwise we extend the current keyframe's end time.
+//
+// This collapses "the cursor was hovering over the same image
+// for 39 seconds" into ONE keyframe — not 40.
+// And "cursor moved to a different card" into a new keyframe.
 
-  for (let i = 1; i < timeline.length; i++) {
-    const cur    = timeline[i];
-    const dPos   = Math.abs(last().zoom.x - cur.zoom.x) + Math.abs(last().zoom.y - cur.zoom.y);
-    const dScale = Math.abs(last().zoom.scale - cur.zoom.scale);
-    if (dPos < DEDUP_POS && dScale < DEDUP_SCALE) {
-      last().t[1] = cur.t[1];
-    } else {
-      out.push({ ...cur, t: [...cur.t] });
-    }
+function collapse(targets, endSec) {
+  if (!targets.length) return [];
+
+  const kfs    = [];
+  let   anchor = targets[0];   // zoom values for current keyframe
+  let   tStart = targets[0].timeSec;
+
+  function emit(tEnd) {
+    if (tEnd - tStart < MIN_KF_SEC) return;
+    kfs.push({
+      t:      [tStart, tEnd],
+      zoom:   { x: anchor.cx, y: anchor.cy, scale: anchor.scale },
+      webcam: webcamPos(anchor.cx, anchor.cy)
+    });
   }
-  return out;
+
+  for (let i = 1; i < targets.length; i++) {
+    const t    = targets[i];
+    const dPos   = Math.abs(anchor.cx - t.cx) + Math.abs(anchor.cy - t.cy);
+    const dScale = Math.abs(anchor.scale - t.scale);
+
+    if (dPos > DEDUP_POS || dScale > DEDUP_SCALE) {
+      // Target has moved meaningfully → close current, start new
+      emit(t.timeSec);
+      tStart = t.timeSec;
+      anchor = t;
+    }
+    // else: extend current keyframe silently
+  }
+
+  // Close final keyframe
+  emit(endSec);
+  return kfs;
 }
 
-// ── Fallback ─────────────────────────────────────────────────
+// ── Fallback for empty / invalid recordings ───────────────────
 function fallback(data) {
-  let dur = 1000;
+  let dur = 1;
   for (const s of data.samples || []) if ((s.time || 0) > dur) dur = s.time;
   for (const e of data.events  || []) if ((e.time || 0) > dur) dur = e.time;
   return [{
@@ -463,135 +220,130 @@ function fallback(data) {
 
 // ── Entry point ───────────────────────────────────────────────
 function generateScript(data) {
-  const viewport = data.meta?.viewport || { width: 1920, height: 1080 };
-  if (!data.samples?.length && !data.events?.length) return fallback(data);
+  const vp      = data.meta?.viewport || { width: 1920, height: 1080 };
+  const samples = data.samples || [];
+  const events  = data.events  || [];
 
-  const buckets  = bucketize(data);
-  const features = extractFeatures(buckets);
-  const segments = createSegments(features, viewport);
-  if (!segments.length) return fallback(data);
+  if (!samples.length && !events.length) return fallback(data);
 
-  const raw   = buildTimeline(segments, viewport);
-  if (!raw.length) return fallback(data);
+  const endSec = Math.max(
+    samples.length ? samples[samples.length - 1].time / 1000 : 0,
+    events.length  ? events[events.length  - 1].time / 1000 : 0,
+    1
+  );
 
-  const final = dedup(raw);
-  return final.length ? final : fallback(data);
+  const pts = buildPoints(samples, events);
+  if (!pts.length) return fallback(data);
+
+  // Compute zoom target for each data point
+  const targets = pts.map(p => {
+    const { cx, cy, scale } = pointToZoom(p, vp);
+    return {
+      timeSec: p.time / 1000,
+      cx,
+      cy,
+      // Apply event boost AFTER clamping, re-clamp afterward
+      scale: Math.min(scale * p.boost, SCALE_MAX)
+    };
+  });
+
+  // Add a 1.0x default keyframe at the start if data starts late
+  const firstTime = targets[0].timeSec;
+  const kfs       = [];
+
+  if (firstTime > 0.5) {
+    kfs.push({
+      t:      [0, firstTime],
+      zoom:   { x: 0.5, y: 0.5, scale: 1.0 },
+      webcam: { x: 0.78, y: 0.78, w: 0.22, h: 0.22 }
+    });
+  }
+
+  kfs.push(...collapse(targets, endSec));
+
+  return kfs.length ? kfs : fallback(data);
 }
 
 // ── Debug report ──────────────────────────────────────────────
 function generateDebugReport(data, script) {
-  const viewport = data.meta?.viewport || { width: 1920, height: 1080 };
-  const samples  = data.samples || [];
-  const events   = data.events  || [];
+  const vp      = data.meta?.viewport || { width: 1920, height: 1080 };
+  const samples = data.samples || [];
+  const events  = data.events  || [];
+  const screen  = vp.width * vp.height;
 
-  const buckets  = bucketize(data);
-  const features = extractFeatures(buckets);
-  const segments = createSegments(features, viewport);
+  const pts     = buildPoints(samples, events);
+  const targets = pts.map(p => {
+    const { cx, cy, scale } = pointToZoom(p, vp);
+    const chain = p.elementChain || [];
 
-  const segDiag = segments.map(seg => {
-    const chain =
-      seg.events.find(e => e.type === "click")?.elementChain ||
-      seg.events.find(e => e.type === "focus")?.elementChain ||
-      seg.dominantChain ||
-      seg.samples[0]?.elementChain;
-
-    const card   = findCard(chain, viewport);
-    const target = computeTarget(seg.state, seg.avgX ?? 0.5, seg.avgY ?? 0.5, chain, viewport);
-
-    const chainSummary = (chain || []).slice(0, 8).map(el => ({
-      tag:  el.tag,
-      cls:  el.cls,
-      area: el.boundingBox
-        ? `${Math.round((el.boundingBox.w * el.boundingBox.h) / (viewport.width * viewport.height) * 100)}%`
-        : null,
-      box: el.boundingBox
-    }));
+    // What element was picked?
+    let picked = null;
+    for (const el of chain) {
+      const b = el.boundingBox;
+      if (!b || b.w <= 0 || b.h <= 0) continue;
+      const frac = (b.w * b.h) / screen;
+      if (frac >= MIN_FRAC && frac < MAX_FRAC) { picked = { tag: el.tag, frac: `${Math.round(frac*100)}%`, box: b }; break; }
+    }
 
     return {
-      duration:    `${((seg.tEnd - seg.tStart) / 1000).toFixed(2)}s`,
-      t:           [seg.tStart / 1000, seg.tEnd / 1000],
-      state:       seg.state,
-      category:    stateCategory(seg.state),
-      sampleCount: seg.samples.length,
-      eventCount:  seg.events.length,
-      avgX:        +(seg.avgX ?? 0.5).toFixed(3),
-      avgY:        +(seg.avgY ?? 0.5).toFixed(3),
-      avgV:        +(seg.avgV ?? 0).toFixed(4),
-      flags:       { hasClick: seg.hasClick, hasKey: seg.hasKey, hasFocus: seg.hasFocus, isScrolling: seg.isScrolling },
-      cardFound:   card !== null,
-      card:        card ? {
-        x: card.x, y: card.y, w: card.w, h: card.h,
-        areaFrac: `${Math.round((card.w * card.h) / (viewport.width * viewport.height) * 100)}%`
-      } : null,
-      computedTarget: { cx: +target.cx.toFixed(3), cy: +target.cy.toFixed(3), scale: +target.scale.toFixed(3) },
-      chainDepth:  (chain || []).length,
-      chainSummary
+      timeSec:   +(p.time / 1000).toFixed(2),
+      isEvent:   p.isEvent,
+      cursorX:   +(p.x || 0).toFixed(3),
+      cursorY:   +(p.y || 0).toFixed(3),
+      chainDepth: chain.length,
+      elementPicked: picked,
+      computed:  { cx: +cx.toFixed(3), cy: +cy.toFixed(3), scale: +scale.toFixed(3) }
     };
   });
 
   // Velocity histogram
-  const velBuckets = [0, 0, 0, 0, 0];
+  const velH = [0,0,0,0,0];
   for (const s of samples) {
     const v = s.velocity || 0;
-    if      (v < 0.02) velBuckets[0]++;
-    else if (v < 0.05) velBuckets[1]++;
-    else if (v < 0.10) velBuckets[2]++;
-    else if (v < 0.20) velBuckets[3]++;
-    else               velBuckets[4]++;
+    if      (v < 0.02) velH[0]++;
+    else if (v < 0.05) velH[1]++;
+    else if (v < 0.10) velH[2]++;
+    else if (v < 0.20) velH[3]++;
+    else               velH[4]++;
   }
 
-  // Sample probe — first 5 samples with chains
-  const sampleProbe = samples.slice(0, 5).map(s => ({
-    time:       s.time,
-    x:          s.x,
-    y:          s.y,
-    velocity:   s.velocity,
-    chainDepth: (s.elementChain || []).length,
-    chain:      (s.elementChain || []).map(el => ({
-      tag:  el.tag,
-      cls:  el.cls,
-      area: el.boundingBox
-        ? `${Math.round((el.boundingBox.w * el.boundingBox.h) / (viewport.width * viewport.height) * 100)}%`
-        : null,
-      box: el.boundingBox
-    }))
-  }));
-
-  // Data coverage: what fraction of buckets have real data?
-  const totalBuckets = buckets.length;
-  const filledBuckets = buckets.filter(b => b.samples.length > 0 || b.events.length > 0).length;
+  const withChains = samples.filter(s => s.elementChain?.length > 0).length;
 
   return {
-    _description: "debug.json — use this to diagnose zoom/segment issues",
+    _version: "v7-dumb",
     meta: {
-      viewport,
-      sampleCount:  samples.length,
-      eventCount:   events.length,
-      durationSec:  samples.length
-        ? +((samples[samples.length - 1].time - samples[0].time) / 1000).toFixed(2)
-        : 0,
-      dataCoverage: `${filledBuckets}/${totalBuckets} buckets have data (${Math.round(filledBuckets/totalBuckets*100)}%)`
+      viewport:      vp,
+      sampleCount:   samples.length,
+      eventCount:    events.length,
+      samplesWithChain: withChains,
+      durationSec:   samples.length
+        ? +((samples[samples.length-1].time - samples[0].time)/1000).toFixed(2) : 0,
+      expectedSamples: samples.length
+        ? Math.round((samples[samples.length-1].time - samples[0].time) / 50) : 0,
+      sampleRate: samples.length && samples.length > 1
+        ? `1 per ${Math.round((samples[samples.length-1].time - samples[0].time) / (samples.length-1))}ms (expected 50ms)`
+        : "n/a"
     },
     DIAGNOSIS: {
-      // Quick summary of what's wrong
-      noChains:    samples.every(s => !s.elementChain?.length)
-        ? "ALL samples have empty element chains — cursor was outside viewport during sampling (x > 1 or cursor not over tab). Fixed in v6 by clamping coords." : "OK",
-      sampleRate:  samples.length < 10
-        ? `Only ${samples.length} samples — interval likely died (navigation issue)` : `OK (${samples.length} samples)`,
-      cardRate:    `${segDiag.filter(s => s.cardFound).length}/${segDiag.length} segments found a card`
+      timerThrottled: samples.length > 1
+        ? ((samples[samples.length-1].time - samples[0].time) / (samples.length-1)) > 200
+          ? "YES — Chrome throttled the interval. Recording tab was in background. Panel now auto-minimizes on start to fix this."
+          : "NO — timer ran at normal speed"
+        : "unknown",
+      noChains: withChains === 0
+        ? "ALL samples have empty chains — cursor was outside viewport. Check that recording tab was focused."
+        : `OK — ${withChains}/${samples.length} samples have chains`,
+      keyframesProduced: script.length
     },
     velocityDistribution: {
-      "< 0.02 (still)":     velBuckets[0],
-      "0.02–0.05 (slow)":   velBuckets[1],
-      "0.05–0.10 (medium)": velBuckets[2],
-      "0.10–0.20 (fast)":   velBuckets[3],
-      "> 0.20 (very fast)": velBuckets[4]
+      "< 0.02 (still)":     velH[0],
+      "0.02–0.05 (slow)":   velH[1],
+      "0.05–0.10 (medium)": velH[2],
+      "0.10–0.20 (fast)":   velH[3],
+      "> 0.20 (very fast)": velH[4]
     },
-    eventSummary:    events.map(e => ({ type: e.type, time: e.time })),
-    segmentCount:    segments.length,
-    segments:        segDiag,
+    perPointTargets: targets.slice(0, 30),  // first 30 points
     scriptKeyframes: script.length,
-    script,
-    sampleProbe
+    script
   };
 }

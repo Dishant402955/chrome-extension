@@ -1,5 +1,5 @@
 // ============================================================
-//  panel.js — Floating recorder panel
+//  panel.js
 // ============================================================
 
 const QUALITIES = [
@@ -8,26 +8,25 @@ const QUALITIES = [
   { id:"lo",  label:"LOW",  desc:"480p·2M",   width:854,  height:480,  bitrate:2_000_000 },
 ];
 
-let selectedTab  = null;
-let selectedQ    = "med";
-let isRecording  = false;
-let timerRef     = null;
-let timerStart   = 0;
-let sampleCount  = 0;
-let tabs         = [];
+let selectedTab = null;
+let selectedQ   = "med";
+let isRecording = false;
+let timerRef    = null;
+let timerStart  = 0;
+let sampleCount = 0;
+let tabs        = [];
 
-// ── DOM refs ──────────────────────────────────────────────────
-const dot        = document.getElementById("dot");
-const tabList    = document.getElementById("tabList");
-const qualList   = document.getElementById("qualList");
-const btnStart   = document.getElementById("btnStart");
-const btnStop    = document.getElementById("btnStop");
-const statusEl   = document.getElementById("statusEl");
-const timerEl    = document.getElementById("timerEl");
-const recInfo    = document.getElementById("recInfo");
-const riTab      = document.getElementById("riTab");
-const riQ        = document.getElementById("riQ");
-const riSamples  = document.getElementById("riSamples");
+const dot       = document.getElementById("dot");
+const tabList   = document.getElementById("tabList");
+const qualList  = document.getElementById("qualList");
+const btnStart  = document.getElementById("btnStart");
+const btnStop   = document.getElementById("btnStop");
+const statusEl  = document.getElementById("statusEl");
+const timerEl   = document.getElementById("timerEl");
+const recInfo   = document.getElementById("recInfo");
+const riTab     = document.getElementById("riTab");
+const riQ       = document.getElementById("riQ");
+const riSamples = document.getElementById("riSamples");
 const btnRefresh = document.getElementById("btnRefresh");
 
 // ── Port ──────────────────────────────────────────────────────
@@ -52,13 +51,8 @@ function loadTabs() {
   tabList.innerHTML = '<div class="tab-empty">Loading…</div>';
   chrome.tabs.query({}, (all) => {
     tabs = all.filter(t => t.url?.startsWith("http://") || t.url?.startsWith("https://"));
-    if (!tabs.length) {
-      tabList.innerHTML = '<div class="tab-empty">No capturable tabs.</div>';
-      return;
-    }
-    if (!selectedTab || !tabs.find(t => t.id === selectedTab)) {
-      selectedTab = tabs[0].id;
-    }
+    if (!tabs.length) { tabList.innerHTML = '<div class="tab-empty">No capturable tabs.</div>'; return; }
+    if (!selectedTab || !tabs.find(t => t.id === selectedTab)) selectedTab = tabs[0].id;
     renderTabs();
   });
 }
@@ -73,30 +67,19 @@ function renderTabs() {
 
     let fav;
     if (t.favIconUrl && !t.favIconUrl.startsWith("chrome://")) {
-      fav = document.createElement("img");
-      fav.className = "tab-fav"; fav.src = t.favIconUrl;
+      fav = document.createElement("img"); fav.className = "tab-fav"; fav.src = t.favIconUrl;
       fav.onerror = () => { fav.style.display = "none"; };
     } else {
-      fav = document.createElement("div");
-      fav.className = "tab-fav-ph"; fav.textContent = "□";
+      fav = document.createElement("div"); fav.className = "tab-fav-ph"; fav.textContent = "□";
     }
 
     const info = document.createElement("div"); info.className = "tab-info";
-    const name = document.createElement("div"); name.className = "tab-name";
-    name.textContent = t.title || "(untitled)";
-    const url = document.createElement("div"); url.className = "tab-url";
-    try {
-      const u = new URL(t.url || "");
-      url.textContent = u.hostname;
-    } catch (_) { url.textContent = t.url || ""; }
+    const name = document.createElement("div"); name.className = "tab-name"; name.textContent = t.title || "(untitled)";
+    const url  = document.createElement("div"); url.className  = "tab-url";
+    try { url.textContent = new URL(t.url || "").hostname; } catch (_) { url.textContent = t.url || ""; }
 
-    info.append(name, url);
-    item.append(bar, fav, info);
-    item.addEventListener("click", () => {
-      if (isRecording) return;
-      selectedTab = t.id;
-      renderTabs();
-    });
+    info.append(name, url); item.append(bar, fav, info);
+    item.addEventListener("click", () => { if (isRecording) return; selectedTab = t.id; renderTabs(); });
     tabList.appendChild(item);
   }
 }
@@ -108,11 +91,7 @@ function renderQualities() {
     const el = document.createElement("div");
     el.className = "qual" + (q.id === selectedQ ? " sel" : "");
     el.innerHTML = `<div class="qual-name">${q.label}</div><div class="qual-desc">${q.desc}</div>`;
-    el.addEventListener("click", () => {
-      if (isRecording) return;
-      selectedQ = q.id;
-      renderQualities();
-    });
+    el.addEventListener("click", () => { if (isRecording) return; selectedQ = q.id; renderQualities(); });
     qualList.appendChild(el);
   }
 }
@@ -121,16 +100,11 @@ function renderQualities() {
 function startTimer() {
   timerStart = Date.now();
   timerRef = setInterval(() => {
-    const s  = Math.floor((Date.now() - timerStart) / 1000);
-    const mm = String(Math.floor(s / 60)).padStart(2, "0");
-    const ss = String(s % 60).padStart(2, "0");
-    timerEl.textContent = `${mm}:${ss}`;
+    const s = Math.floor((Date.now() - timerStart) / 1000);
+    timerEl.textContent = `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
   }, 500);
 }
-function stopTimer() {
-  clearInterval(timerRef); timerRef = null;
-  timerEl.textContent = "";
-}
+function stopTimer() { clearInterval(timerRef); timerRef = null; timerEl.textContent = ""; }
 
 // ── State transitions ─────────────────────────────────────────
 function setStatus(txt, cls) {
@@ -144,23 +118,33 @@ function lockControls(locked) {
 }
 
 function onStarted() {
-  isRecording = true;
-  sampleCount = 0;
+  isRecording = true; sampleCount = 0;
   btnStart.style.display = "none";
   btnStop.style.display  = "";
   btnStop.disabled       = false;
   dot.classList.add("live");
-  setStatus("● LIVE", "live");
+
+  // Tell the user the panel will minimize
+  setStatus("● RECORDING", "live");
   lockControls(true);
 
   const q   = QUALITIES.find(x => x.id === selectedQ);
   const tab = tabs.find(t => t.id === selectedTab);
-  riTab.textContent = (tab?.title || tab?.url || "—").slice(0, 28);
-  riQ.textContent   = q?.desc || "—";
+  riTab.textContent     = (tab?.title || tab?.url || "—").slice(0, 28);
+  riQ.textContent       = q?.desc || "—";
   riSamples.textContent = "0";
   recInfo.classList.add("show");
 
   startTimer();
+
+  // Panel minimizes itself after a short delay so the user can see
+  // "Recording started" before it disappears.
+  // Background.js will ALSO minimize it — this is belt-and-suspenders.
+  setTimeout(() => {
+    chrome.windows.getCurrent((win) => {
+      if (win) chrome.windows.update(win.id, { state: "minimized" });
+    });
+  }, 800);
 }
 
 function onDone() {
@@ -203,9 +187,7 @@ btnStop.addEventListener("click", () => {
   bgSend({ type: "STOP" });
 });
 
-btnRefresh.addEventListener("click", () => {
-  if (!isRecording) loadTabs();
-});
+btnRefresh.addEventListener("click", () => { if (!isRecording) loadTabs(); });
 
 // ── Boot ──────────────────────────────────────────────────────
 loadTabs();
