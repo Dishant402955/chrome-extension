@@ -12,9 +12,9 @@ let screenStream   = null;
 let screenRecorder = null;
 let screenChunks   = [];
 
-let lastX          = 0;
-let lastY          = 0;
-let lastSampleTime = performance.now();
+let lastX          = -1;   // -1 = no mouse position yet
+let lastY          = -1;
+let lastSampleTime = 0;
 let recentSamples  = [];
 
 let scrollAccum  = 0;
@@ -29,26 +29,29 @@ function safeSend(msg) {
 }
 
 // ── Element chain ─────────────────────────────────────────────
-// Depth 15: GitHub / React / Material UI apps can have 12+ nesting
-// levels before reaching the meaningful layout card.
-// The generator uses this chain to find the "card" boundary,
-// so shallow chains mean card detection always fails.
-function getElementChain(el) {
+// Depth 15 — React/GitHub apps nest 12+ levels before the card.
+// Clamp coordinates first: elementFromPoint returns null for
+// coordinates outside [0, innerWidth) × [0, innerHeight).
+function getElementChain(rawX, rawY) {
+  // Clamp to viewport — this is the critical fix for x > 1.0 bug.
+  // When the floating window or side panel resizes the viewport AFTER
+  // lastX was set, rawX can exceed window.innerWidth.
+  const x = Math.max(0, Math.min(rawX, window.innerWidth  - 1));
+  const y = Math.max(0, Math.min(rawY, window.innerHeight - 1));
+
+  const el = document.elementFromPoint(x, y);
   if (!el) return [];
+
   const chain   = [];
   let   current = el;
   let   depth   = 0;
 
   while (current && current !== document.documentElement && depth < 15) {
     const rect = current.getBoundingClientRect();
-
-    // Include element even if off-screen — generator handles that.
-    // Only skip truly invisible (0×0) elements.
     if (rect.width > 0 || rect.height > 0) {
       chain.push({
         tag:  (current.tagName || "").toUpperCase(),
         role: current.getAttribute("role") || null,
-        // className as array of tokens (easier to read in debug)
         cls:  current.className
                 ? String(current.className).trim().split(/\s+/).slice(0, 6)
                 : [],
@@ -61,7 +64,6 @@ function getElementChain(el) {
         }
       });
     }
-
     current = current.parentElement;
     depth++;
   }
@@ -73,22 +75,28 @@ function getElementChain(el) {
 function sample() {
   if (!recording) return;
 
+  // Skip if we have no mouse position yet
+  if (lastX < 0) return;
+
   const now  = performance.now();
   const time = globalOffset + (now - startTime);
 
-  const el    = document.elementFromPoint(lastX, lastY);
-  const chain = getElementChain(el);
+  // Normalised, clamped to [0,1]
+  const nx = Math.max(0, Math.min(1, lastX / window.innerWidth));
+  const ny = Math.max(0, Math.min(1, lastY / window.innerHeight));
 
-  const dt   = now - lastSampleTime;
+  const chain = getElementChain(lastX, lastY);
+
+  const dt   = lastSampleTime > 0 ? now - lastSampleTime : 0;
   const prev = recentSamples.at(-1);
-  const dx   = lastX - (prev?.rawX ?? lastX);
-  const dy   = lastY - (prev?.rawY ?? lastY);
+  const dx   = prev ? lastX - prev.rawX : 0;
+  const dy   = prev ? lastY - prev.rawY : 0;
   const vel  = dt > 0 ? Math.sqrt(dx * dx + dy * dy) / dt : 0;
 
   const s = {
     time,
-    x:            lastX / window.innerWidth,
-    y:            lastY / window.innerHeight,
+    x:            nx,
+    y:            ny,
     rawX:         lastX,
     rawY:         lastY,
     velocity:     vel,
@@ -121,12 +129,12 @@ document.addEventListener("scroll", () => {
 
 document.addEventListener("click", (e) => {
   if (!recording) return;
-  const chain = getElementChain(document.elementFromPoint(e.clientX, e.clientY));
+  const chain = getElementChain(e.clientX, e.clientY);
   const ev = {
     type:         "click",
     time:         globalOffset + (performance.now() - startTime),
-    x:            e.clientX / window.innerWidth,
-    y:            e.clientY / window.innerHeight,
+    x:            Math.max(0, Math.min(1, e.clientX / window.innerWidth)),
+    y:            Math.max(0, Math.min(1, e.clientY / window.innerHeight)),
     elementChain: chain,
     context:      recentSamples.slice(-6)
   };
@@ -152,7 +160,7 @@ document.addEventListener("keydown", (e) => {
 
 document.addEventListener("focusin", (e) => {
   if (!recording) return;
-  const chain = getElementChain(e.target);
+  const chain = getElementChain(e.target.getBoundingClientRect().left + 4, e.target.getBoundingClientRect().top + 4);
   const ev = {
     type:         "focus",
     time:         globalOffset + (performance.now() - startTime),
@@ -187,7 +195,11 @@ chrome.runtime.onMessage.addListener(async (msg) => {
 
     try {
       screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { width: { ideal: quality.width }, height: { ideal: quality.height }, frameRate: { ideal: 30 } },
+        video: {
+          width:     { ideal: quality.width },
+          height:    { ideal: quality.height },
+          frameRate: { ideal: 30 }
+        },
         audio: false
       });
     } catch (_) {
@@ -211,6 +223,8 @@ chrome.runtime.onMessage.addListener(async (msg) => {
     scrollAccum   = 0;
     lastScrollY   = window.scrollY;
     globalOffset  = 0;
+    lastX         = -1;
+    lastY         = -1;
 
     const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
       ? "video/webm;codecs=vp9" : "video/webm";
@@ -235,15 +249,19 @@ chrome.runtime.onMessage.addListener(async (msg) => {
 
   // ──────────── RESUME (after page navigation) ──────────────
   else if (msg.type === "RESUME") {
+    // Pick up from where background's data left off
     globalOffset  = msg.startedAt || 0;
     localSamples  = [];
     localEvents   = [];
     recentSamples = [];
     scrollAccum   = 0;
     lastScrollY   = window.scrollY;
+    lastX         = -1;
+    lastY         = -1;
     startTime     = performance.now();
     recording     = true;
     startSampling();
+
     safeSend({
       type: "RECORDING_RESUMED",
       data: { viewport: { width: window.innerWidth, height: window.innerHeight } }
@@ -251,13 +269,17 @@ chrome.runtime.onMessage.addListener(async (msg) => {
   }
 
   // ──────────── STOP ────────────────────────────────────────
+  // IMPORTANT: do NOT bail on !recording here.
+  // After navigation, this page's recording flag may be false
+  // but it still needs to process the stop and generate the script.
   else if (msg.type === "STOP") {
-    if (!recording) return;
-
+    const wasRecording = recording;
     recording = false;
+
     if (sampleInterval) { clearInterval(sampleInterval); sampleInterval = null; }
 
-    // Use background's accumulated data (survives navigation)
+    // Use background's accumulated data — it has everything across
+    // all page loads. Fall back to local only if background sent nothing.
     const bgSamples = msg.accumulated?.samples || [];
     const bgEvents  = msg.accumulated?.events  || [];
     const bgVP      = msg.accumulated?.viewport;
@@ -272,27 +294,26 @@ chrome.runtime.onMessage.addListener(async (msg) => {
       meta:    { viewport: finalVP }
     };
 
-    // Generate script
-    const script = generateScript(inputData);
-
-    // Generate debug report (separate function in generator.js)
+    const script      = generateScript(inputData);
     const debugReport = generateDebugReport(inputData, script);
 
-    // Get video
+    // Handle video — may not have a recorder if this is a resumed page
     let screenDataUrl = null;
-    if (screenRecorder && screenRecorder.state !== "inactive") {
+    if (wasRecording && screenRecorder && screenRecorder.state !== "inactive") {
       await new Promise(res => { screenRecorder.onstop = res; screenRecorder.stop(); });
     }
     if (screenChunks.length) {
       screenDataUrl = await blobToDataURL(new Blob(screenChunks, { type: "video/webm" }));
     }
 
-    safeSend({ type: "FINAL_DATA",  data: { screenDataUrl, script } });
-    safeSend({ type: "DEBUG_DATA",  data: debugReport });
+    safeSend({ type: "FINAL_DATA", data: { screenDataUrl, script } });
+    safeSend({ type: "DEBUG_DATA", data: debugReport });
 
     screenStream?.getTracks().forEach(t => t.stop());
     screenStream = null;
 
-    console.log(`[Recorder] Done — ${finalSamples.length} samples, ${finalEvents.length} events, ${script.length} keyframes`);
+    console.log(
+      `[Recorder] Done — ${finalSamples.length} samples, ${finalEvents.length} events, ${script.length} keyframes`
+    );
   }
 });

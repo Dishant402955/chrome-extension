@@ -1,5 +1,5 @@
 // ============================================================
-//  generator.js — Script Generator v5
+//  generator.js — Script Generator v6
 //
 //  Input  (fixed):
 //    { samples[], events[], meta:{ viewport:{width,height} } }
@@ -7,23 +7,18 @@
 //    [{ t:[startSec,endSec], zoom:{x,y,scale}, webcam:{x,y,w,h} }]
 // ============================================================
 
-const BUCKET_MS = 50; // matches content.js setInterval
+const BUCKET_MS = 50; // must match content.js setInterval
 
 // ── Velocity thresholds (normalised px/ms) ────────────────────
 const V_STABLE = 0.04;
 const V_FAST   = 0.18;
 
-// ── Scale range ───────────────────────────────────────────────
-const SCALE_MIN = 1.00;
-const SCALE_MAX = 1.75;
+// ── Scale ─────────────────────────────────────────────────────
+const SCALE_MIN  = 1.00;
+const SCALE_MAX  = 1.75;
+const CARD_FILL  = 0.82;   // card occupies this fraction of zoomed frame
 
-// Card target fill: card should occupy this fraction of the
-// visible frame on the TIGHTER axis.
-const CARD_FILL = 0.82;
-
-// ── Scale table (state → scale when NO card found) ───────────
-// These are intentionally meaningful — never less than 1.3x
-// for focused states, so the viewer always gets a real zoom.
+// Scale to use when no card is found — always meaningful, never < 1.30
 const SCALE_BY_STATE = {
   clicking:   1.65,
   typing:     1.60,
@@ -35,20 +30,21 @@ const SCALE_BY_STATE = {
   moving:     1.00,
 };
 
-// ── Camera blend ─────────────────────────────────────────────
-// 0.80 = camera reaches 80% of the distance to target per keyframe.
-// High value means decisive movement, not mushy drift.
-const BLEND = 0.80;
+// ── Camera ────────────────────────────────────────────────────
+const BLEND = 0.80;   // lerp weight toward new target per keyframe
 
-// ── Dedup: only collapse truly identical holds ────────────────
+// ── Dedup — only collapse truly identical consecutive holds ───
 const DEDUP_POS   = 0.010;
 const DEDUP_SCALE = 0.020;
 
-// ── Segment break: Y-grid fallback ───────────────────────────
-// When card detection fails, divide the viewport into Y-bands.
-// Moving from one band to another → new segment.
-// 8 bands = each band is 12.5% of viewport height.
-const Y_GRID_BANDS = 8;
+// ── Y-grid fallback bands ─────────────────────────────────────
+// Only used when findCard returns null AND there is real sample data.
+// Empty buckets are NEVER used for Y-grid breaks.
+const Y_BANDS = 8;
+
+// ── Segment minimum ───────────────────────────────────────────
+const MIN_SEG_MS = 150;
+const MIN_KF_MS  = 250;
 
 // ─── Helpers ─────────────────────────────────────────────────
 function clamp(v, lo = 0.05, hi = 0.95) {
@@ -71,13 +67,13 @@ function webcamPos(cx, cy) {
 
 // ── State classifier ─────────────────────────────────────────
 function classifyState(f) {
-  if (f.hasClick)                           return "clicking";
-  if (f.hasKey)                             return "typing";
-  if (f.hasFocus && f.avgV < V_STABLE)      return "focusing";
-  if (f.isScrolling)                        return "scrolling";
-  if (f.avgV >= V_FAST)                     return "moving";
-  if (f.avgV < V_STABLE && f.dominantChain) return "reading";
-  if (f.avgV < V_STABLE)                    return "idle";
+  if (f.hasClick)                            return "clicking";
+  if (f.hasKey)                              return "typing";
+  if (f.hasFocus && f.avgV < V_STABLE)       return "focusing";
+  if (f.isScrolling)                         return "scrolling";
+  if (f.avgV >= V_FAST)                      return "moving";
+  if (f.avgV < V_STABLE && f.hasChain)       return "reading";
+  if (f.avgV < V_STABLE)                     return "idle";
   return "moving";
 }
 
@@ -87,30 +83,18 @@ function stateCategory(state) {
   return "scanning";
 }
 
-// ── Card finder ───────────────────────────────────────────────
-//
-// WHAT IS A CARD:
-//   An element whose parent is significantly (≥ PARENT_RATIO) larger.
-//   This identifies natural content containers: repo rows, cards,
-//   panels, modals, sidebar items — anything visually distinct.
-//
-// ALGORITHM:
-//   Walk chain[0..n] (from cursor element upward).
-//   At each step compare el.area vs parent.area.
-//   The first element where parent is PARENT_RATIO× larger = the card.
-//
-// THRESHOLDS:
-//   - Minimum card area: 0.5% of screen (avoids tiny decorative elements)
-//   - Maximum card area: 90% of screen (avoids the page body)
-//   - PARENT_RATIO: 1.6× — tuned for typical layout hierarchies
-//
-// FALLBACK (Pass 2):
-//   If no parent-jump found (e.g. flat HTML structure), take the
-//   first element in a 3%–70% size range.
+function yBand(y) {
+  return Math.floor(Math.max(0, Math.min(0.9999, y)) * Y_BANDS);
+}
 
-const PARENT_RATIO    = 1.60;
-const MIN_CARD_FRAC   = 0.005;  // 0.5% of screen
-const MAX_CARD_FRAC   = 0.90;   // 90% of screen
+// ── Card finder ───────────────────────────────────────────────
+// Walk up the element chain and find the first element whose
+// parent is PARENT_RATIO× larger in area.
+// That gap = the card boundary (row in a list, panel in a layout, etc.)
+
+const PARENT_RATIO  = 1.60;
+const MIN_CARD_FRAC = 0.005;   // 0.5% of screen minimum
+const MAX_CARD_FRAC = 0.90;    // 90% of screen maximum
 
 function findCard(chain, viewport) {
   if (!chain?.length) return null;
@@ -121,33 +105,25 @@ function findCard(chain, viewport) {
     const box = chain[i].boundingBox;
     if (!box || box.w <= 0 || box.h <= 0) continue;
 
-    const elArea   = box.w * box.h;
-    const elFrac   = elArea / screen;
+    const elFrac = (box.w * box.h) / screen;
+    if (elFrac < MIN_CARD_FRAC) continue;
+    if (elFrac > MAX_CARD_FRAC) continue;
 
-    if (elFrac < MIN_CARD_FRAC) continue;  // too tiny
-    if (elFrac > MAX_CARD_FRAC) continue;  // this IS the page
-
-    const parentBox = chain[i + 1]?.boundingBox;
+    const parentBox  = chain[i + 1]?.boundingBox;
+    const parentFrac = parentBox ? (parentBox.w * parentBox.h) / screen : 0;
 
     if (!parentBox || parentBox.w <= 0 || parentBox.h <= 0) {
-      // No valid parent → this element is the card boundary
-      return box;
+      return box; // no parent → this IS the card
     }
-
-    const parentFrac = (parentBox.w * parentBox.h) / screen;
-
     if (parentFrac > MAX_CARD_FRAC) {
-      // Parent is the page → current element IS the card
-      return box;
+      return box; // parent is the page → this IS the card
     }
-
-    if ((parentBox.w * parentBox.h) >= elArea * PARENT_RATIO) {
-      // Parent is significantly larger → found the boundary
-      return box;
+    if ((parentBox.w * parentBox.h) >= (box.w * box.h) * PARENT_RATIO) {
+      return box; // parent is significantly larger → card boundary found
     }
   }
 
-  // Pass 2: size-range fallback
+  // Pass 2: size-range fallback (3%–65% of screen)
   for (const el of chain) {
     const box = el.boundingBox;
     if (!box || box.w <= 0 || box.h <= 0) continue;
@@ -158,7 +134,6 @@ function findCard(chain, viewport) {
   return null;
 }
 
-// ── Scale from card geometry ──────────────────────────────────
 function scaleFromCard(card, viewport) {
   if (!card) return null;
   const sw = (viewport.width  * CARD_FILL) / card.w;
@@ -183,41 +158,31 @@ function layoutBias(cx, cy, card, viewport) {
   return { x: clamp(x), y: clamp(y) };
 }
 
-// ── Compute zoom target ───────────────────────────────────────
 function computeTarget(state, avgX, avgY, chain, viewport) {
-  // Moving / scrolling: always zoom out for context
   if (state === "scrolling" || state === "moving") {
     return { cx: clamp(avgX), cy: clamp(avgY), scale: SCALE_BY_STATE[state], card: null };
   }
 
   const card  = findCard(chain, viewport);
   const cc    = cardCenter(card, viewport);
-
   let scale, cx, cy;
 
   if (card && cc) {
     scale = scaleFromCard(card, viewport);
-    // 35% cursor, 65% card center — card dominates
-    cx = lerp(cc.x, avgX, 0.35);
-    cy = lerp(cc.y, avgY, 0.35);
+    cx    = lerp(cc.x, avgX, 0.35);   // 65% card, 35% cursor
+    cy    = lerp(cc.y, avgY, 0.35);
     ;({ x: cx, y: cy } = layoutBias(cx, cy, card, viewport));
   } else {
-    // No card found: use cursor position with state-appropriate scale
     scale = SCALE_BY_STATE[state] ?? 1.40;
     cx    = avgX;
     cy    = avgY;
   }
 
   ;({ x: cx, y: cy } = clampCenter(cx, cy, scale));
-
   return { cx: clamp(cx), cy: clamp(cy), scale, card };
 }
 
-// ── Card identity check ───────────────────────────────────────
-// Cards are the "same" only if their centers are within
-// CARD_MOVE_FRACTION of the SMALLER card's own size.
-// List items (~40px tall): threshold=22px → adjacent rows break.
-// Full content panel (~400px tall): threshold=220px → no break.
+// ── Card identity comparison ──────────────────────────────────
 const CARD_MOVE_FRAC = 0.50;
 
 function cardChanged(cardA, cardB) {
@@ -231,14 +196,6 @@ function cardChanged(cardA, cardB) {
   const dCy = Math.abs((cardA.y + cardA.h / 2) - (cardB.y + cardB.h / 2));
 
   return dCx > tolW || dCy > tolH;
-}
-
-// ── Y-grid fallback break ─────────────────────────────────────
-// When findCard returns null for both current and previous segment,
-// we can still detect movement by checking which Y-band the cursor
-// is in. Moving from band 2 to band 4 → new segment.
-function yBand(normalizedY) {
-  return Math.floor(normalizedY * Y_GRID_BANDS);
 }
 
 // ── PHASE 1 — Bucketize ───────────────────────────────────────
@@ -275,8 +232,9 @@ function bucketize(data) {
 // ── PHASE 2 — Extract features ────────────────────────────────
 function extractFeatures(buckets) {
   return buckets.map(b => {
-    const s = b.samples;
-    const n = s.length;
+    const s  = b.samples;
+    const n  = s.length;
+    const ne = b.events.length;
 
     const avgX = n ? s.reduce((a, x) => a + x.x, 0) / n : 0.5;
     const avgY = n ? s.reduce((a, x) => a + x.y, 0) / n : 0.5;
@@ -285,7 +243,6 @@ function extractFeatures(buckets) {
     const totalScroll = n ? s.reduce((a, x) => a + (x.scrollDelta || 0), 0) : 0;
     const isScrolling = Math.abs(totalScroll) > 30 && avgV >= V_STABLE;
 
-    // Dominant chain — most-frequent across samples
     let dominantChain = null;
     if (n) {
       const freq = new Map();
@@ -303,7 +260,6 @@ function extractFeatures(buckets) {
       }
     }
 
-    // Override with more precise event chains
     const focusEv = b.events.find(e => e.type === "focus");
     const clickEv = b.events.find(e => e.type === "click");
     if (focusEv?.elementChain?.length) dominantChain = focusEv.elementChain;
@@ -319,7 +275,12 @@ function extractFeatures(buckets) {
       avgX, avgY, avgV,
       isScrolling,
       hasClick, hasKey, hasFocus,
+      hasChain:  dominantChain !== null,
       dominantChain,
+      // ── KEY FLAG ──────────────────────────────────────────
+      // A bucket with no samples AND no events carries zero
+      // information. It must NEVER trigger a segment break.
+      isEmpty: n === 0 && ne === 0,
       samples: b.samples,
       events:  b.events
     };
@@ -328,32 +289,20 @@ function extractFeatures(buckets) {
 
 // ── PHASE 3 — Create segments ─────────────────────────────────
 //
-// Break criteria (in priority order):
+// Break conditions (only evaluated on NON-EMPTY buckets):
+//   1. Interaction event (click / focus) — always break
+//   2. State category change (interacting / scanning / moving)
+//   3. Card identity change (card-relative spatial threshold)
+//   4. Y-grid fallback (when both cards null AND real samples exist)
 //
-//  1. Interaction event (click / focus) — always break
-//     Gives each interaction its own dedicated keyframe.
-//
-//  2. State category change
-//     interacting / scanning / moving are fundamentally different
-//     zoom levels; they always need separate keyframes.
-//
-//  3. Card identity change (PRIMARY spatial break)
-//     Uses card-relative threshold so list items break per row.
-//     Requires findCard to return a non-null box.
-//
-//  4. Y-grid band change (FALLBACK spatial break)
-//     When findCard returns null for both current and previous,
-//     the viewport is divided into Y_GRID_BANDS rows.
-//     Moving from one row to another triggers a break.
-//     This guarantees spatial segments even on flat-DOM pages.
-//
-// No time-based cap. Segment length = however long the user
-// stays in the same area.
+// Empty buckets (no samples, no events) just silently extend the
+// current segment's tEnd. They are INVISIBLE to break detection.
+// This was the cause of 18 garbage segments from dead air.
 
 function createSegments(features, viewport) {
   const segs = [];
-  let cur    = null;
-  let curCard = null;   // card for current segment (stored separately for break detection)
+  let cur     = null;
+  let curCard = null;
 
   function startSeg(f, state, card) {
     curCard = card;
@@ -369,43 +318,51 @@ function createSegments(features, viewport) {
       dominantChain: f.dominantChain,
       samples:  [...f.samples],
       events:   [...f.events],
-      _sx: f.avgX, _sy: f.avgY, _sv: f.avgV, _n: 1
+      _sx: f.avgX, _sy: f.avgY, _sv: f.avgV, _n: 1,
+      _realN: 1   // count of non-empty buckets (for avgY used in Y-grid)
     };
   }
 
   function flush() {
     if (!cur) return;
-    const durMs = cur.tEnd - cur.tStart;
-    if (durMs >= 150) {
+    if (cur.tEnd - cur.tStart >= MIN_SEG_MS) {
       cur.avgX = cur._sx / cur._n;
       cur.avgY = cur._sy / cur._n;
       cur.avgV = cur._sv / cur._n;
-      delete cur._sx; delete cur._sy; delete cur._sv; delete cur._n;
+      delete cur._sx; delete cur._sy; delete cur._sv; delete cur._n; delete cur._realN;
       segs.push(cur);
     }
-    cur = null;
+    cur     = null;
     curCard = null;
   }
 
   for (const f of features) {
-    const state = classifyState(f);
-    const card  = findCard(f.dominantChain, viewport);
-
     if (!cur) {
+      const state = classifyState(f);
+      const card  = f.isEmpty ? null : findCard(f.dominantChain, viewport);
       cur = startSeg(f, state, card);
       continue;
     }
 
-    // ── Break conditions ──────────────────────────────────
+    // ── EMPTY BUCKET: just extend time, no break check ────
+    if (f.isEmpty) {
+      cur.tEnd = f.tEnd;
+      continue;
+    }
+
+    // ── Non-empty bucket: evaluate break conditions ────────
+    const state = classifyState(f);
+    const card  = findCard(f.dominantChain, viewport);
+
     const interactionEvent = f.hasClick || f.hasFocus;
     const categoryChanged  = stateCategory(state) !== stateCategory(cur.state);
+    const cardBreak        = cardChanged(curCard, card);
 
-    // Card-based spatial break
-    const cardBreak = cardChanged(curCard, card);
-
-    // Y-grid fallback: when BOTH cards are null, use Y-band position
+    // Y-grid fallback: only when BOTH cards are null AND
+    // the running average Y of the current segment is known
+    const curAvgY    = cur._sy / cur._n;
     const yGridBreak = (!curCard && !card)
-      && (yBand(f.avgY) !== yBand(cur._sy / cur._n));
+      && (yBand(f.avgY) !== yBand(curAvgY));
 
     const shouldBreak = interactionEvent || categoryChanged || cardBreak || yGridBreak;
 
@@ -413,13 +370,13 @@ function createSegments(features, viewport) {
       flush();
       cur = startSeg(f, state, card);
     } else {
-      cur.tEnd       = f.tEnd;
-      cur._sx       += f.avgX;
-      cur._sy       += f.avgY;
-      cur._sv       += f.avgV;
-      cur._n        += 1;
+      cur.tEnd        = f.tEnd;
+      cur._sx        += f.avgX;
+      cur._sy        += f.avgY;
+      cur._sv        += f.avgV;
+      cur._n         += 1;
+      cur._realN     += 1;
 
-      // Upgrade state/chain on interaction within segment
       if (f.hasClick || f.hasFocus) {
         cur.state         = state;
         cur.dominantChain = f.dominantChain || cur.dominantChain;
@@ -446,7 +403,7 @@ function buildTimeline(segments, viewport) {
   const out     = [];
 
   for (const seg of segments) {
-    if (seg.tEnd - seg.tStart < 250) continue;
+    if (seg.tEnd - seg.tStart < MIN_KF_MS) continue;
 
     const chain =
       seg.events.find(e => e.type === "click")?.elementChain ||
@@ -481,7 +438,7 @@ function dedup(timeline) {
 
   for (let i = 1; i < timeline.length; i++) {
     const cur    = timeline[i];
-    const dPos   = Math.abs(last().zoom.x     - cur.zoom.x) + Math.abs(last().zoom.y - cur.zoom.y);
+    const dPos   = Math.abs(last().zoom.x - cur.zoom.x) + Math.abs(last().zoom.y - cur.zoom.y);
     const dScale = Math.abs(last().zoom.scale - cur.zoom.scale);
     if (dPos < DEDUP_POS && dScale < DEDUP_SCALE) {
       last().t[1] = cur.t[1];
@@ -522,20 +479,15 @@ function generateScript(data) {
 }
 
 // ── Debug report ──────────────────────────────────────────────
-// Runs the same pipeline and captures intermediate state at each
-// phase. Downloaded as debug.json so you can inspect exactly
-// what the generator saw and decided.
 function generateDebugReport(data, script) {
   const viewport = data.meta?.viewport || { width: 1920, height: 1080 };
   const samples  = data.samples || [];
   const events   = data.events  || [];
 
-  // Re-run pipeline with diagnostics captured
   const buckets  = bucketize(data);
   const features = extractFeatures(buckets);
   const segments = createSegments(features, viewport);
 
-  // Per-segment diagnostics
   const segDiag = segments.map(seg => {
     const chain =
       seg.events.find(e => e.type === "click")?.elementChain ||
@@ -544,67 +496,41 @@ function generateDebugReport(data, script) {
       seg.samples[0]?.elementChain;
 
     const card   = findCard(chain, viewport);
-    const target = computeTarget(seg.state, seg.avgX, seg.avgY, chain, viewport);
+    const target = computeTarget(seg.state, seg.avgX ?? 0.5, seg.avgY ?? 0.5, chain, viewport);
 
-    // Summarise the element chain (don't dump full chain — too verbose)
-    const chainSummary = (chain || []).slice(0, 6).map(el => ({
+    const chainSummary = (chain || []).slice(0, 8).map(el => ({
       tag:  el.tag,
-      box:  el.boundingBox,
+      cls:  el.cls,
       area: el.boundingBox
         ? `${Math.round((el.boundingBox.w * el.boundingBox.h) / (viewport.width * viewport.height) * 100)}%`
-        : null
+        : null,
+      box: el.boundingBox
     }));
 
     return {
-      duration:     `${((seg.tEnd - seg.tStart) / 1000).toFixed(2)}s`,
-      t:            [seg.tStart / 1000, seg.tEnd / 1000],
-      state:        seg.state,
-      category:     stateCategory(seg.state),
-      sampleCount:  seg.samples.length,
-      eventCount:   seg.events.length,
-      avgX:         +seg.avgX.toFixed(3),
-      avgY:         +seg.avgY.toFixed(3),
-      avgV:         +seg.avgV.toFixed(4),
-      flags:        {
-        hasClick:   seg.hasClick,
-        hasKey:     seg.hasKey,
-        hasFocus:   seg.hasFocus,
-        isScrolling: seg.isScrolling
-      },
-      cardFound:    card !== null,
-      card:         card ? {
+      duration:    `${((seg.tEnd - seg.tStart) / 1000).toFixed(2)}s`,
+      t:           [seg.tStart / 1000, seg.tEnd / 1000],
+      state:       seg.state,
+      category:    stateCategory(seg.state),
+      sampleCount: seg.samples.length,
+      eventCount:  seg.events.length,
+      avgX:        +(seg.avgX ?? 0.5).toFixed(3),
+      avgY:        +(seg.avgY ?? 0.5).toFixed(3),
+      avgV:        +(seg.avgV ?? 0).toFixed(4),
+      flags:       { hasClick: seg.hasClick, hasKey: seg.hasKey, hasFocus: seg.hasFocus, isScrolling: seg.isScrolling },
+      cardFound:   card !== null,
+      card:        card ? {
         x: card.x, y: card.y, w: card.w, h: card.h,
         areaFrac: `${Math.round((card.w * card.h) / (viewport.width * viewport.height) * 100)}%`
       } : null,
-      computedTarget: {
-        cx:    +target.cx.toFixed(3),
-        cy:    +target.cy.toFixed(3),
-        scale: +target.scale.toFixed(3)
-      },
-      chainDepth:   (chain || []).length,
+      computedTarget: { cx: +target.cx.toFixed(3), cy: +target.cy.toFixed(3), scale: +target.scale.toFixed(3) },
+      chainDepth:  (chain || []).length,
       chainSummary
     };
   });
 
-  // Sample of raw data (first 5 samples with full chains, for DOM inspection)
-  const sampleProbe = samples.slice(0, 5).map(s => ({
-    time:          s.time,
-    x:             s.x,
-    y:             s.y,
-    velocity:      s.velocity,
-    chainDepth:    (s.elementChain || []).length,
-    chain:         (s.elementChain || []).map(el => ({
-      tag:  el.tag,
-      cls:  el.cls,
-      box:  el.boundingBox,
-      area: el.boundingBox
-        ? `${Math.round((el.boundingBox.w * el.boundingBox.h) / (viewport.width * viewport.height) * 100)}%`
-        : null
-    }))
-  }));
-
-  // Velocity histogram (shows distribution of cursor speeds)
-  const velBuckets = [0, 0, 0, 0, 0]; // [<0.02, 0.02-0.05, 0.05-0.10, 0.10-0.20, >0.20]
+  // Velocity histogram
+  const velBuckets = [0, 0, 0, 0, 0];
   for (const s of samples) {
     const v = s.velocity || 0;
     if      (v < 0.02) velBuckets[0]++;
@@ -614,26 +540,56 @@ function generateDebugReport(data, script) {
     else               velBuckets[4]++;
   }
 
+  // Sample probe — first 5 samples with chains
+  const sampleProbe = samples.slice(0, 5).map(s => ({
+    time:       s.time,
+    x:          s.x,
+    y:          s.y,
+    velocity:   s.velocity,
+    chainDepth: (s.elementChain || []).length,
+    chain:      (s.elementChain || []).map(el => ({
+      tag:  el.tag,
+      cls:  el.cls,
+      area: el.boundingBox
+        ? `${Math.round((el.boundingBox.w * el.boundingBox.h) / (viewport.width * viewport.height) * 100)}%`
+        : null,
+      box: el.boundingBox
+    }))
+  }));
+
+  // Data coverage: what fraction of buckets have real data?
+  const totalBuckets = buckets.length;
+  const filledBuckets = buckets.filter(b => b.samples.length > 0 || b.events.length > 0).length;
+
   return {
-    _description: "Recorder debug output. Use this to diagnose segment/zoom issues.",
+    _description: "debug.json — use this to diagnose zoom/segment issues",
     meta: {
       viewport,
       sampleCount:  samples.length,
       eventCount:   events.length,
       durationSec:  samples.length
         ? +((samples[samples.length - 1].time - samples[0].time) / 1000).toFixed(2)
-        : 0
+        : 0,
+      dataCoverage: `${filledBuckets}/${totalBuckets} buckets have data (${Math.round(filledBuckets/totalBuckets*100)}%)`
+    },
+    DIAGNOSIS: {
+      // Quick summary of what's wrong
+      noChains:    samples.every(s => !s.elementChain?.length)
+        ? "ALL samples have empty element chains — cursor was outside viewport during sampling (x > 1 or cursor not over tab). Fixed in v6 by clamping coords." : "OK",
+      sampleRate:  samples.length < 10
+        ? `Only ${samples.length} samples — interval likely died (navigation issue)` : `OK (${samples.length} samples)`,
+      cardRate:    `${segDiag.filter(s => s.cardFound).length}/${segDiag.length} segments found a card`
     },
     velocityDistribution: {
-      "< 0.02 (still)":    velBuckets[0],
-      "0.02–0.05 (slow)":  velBuckets[1],
+      "< 0.02 (still)":     velBuckets[0],
+      "0.02–0.05 (slow)":   velBuckets[1],
       "0.05–0.10 (medium)": velBuckets[2],
-      "0.10–0.20 (fast)":  velBuckets[3],
+      "0.10–0.20 (fast)":   velBuckets[3],
       "> 0.20 (very fast)": velBuckets[4]
     },
-    eventSummary: events.map(e => ({ type: e.type, time: e.time })),
-    segmentCount: segments.length,
-    segments:     segDiag,
+    eventSummary:    events.map(e => ({ type: e.type, time: e.time })),
+    segmentCount:    segments.length,
+    segments:        segDiag,
     scriptKeyframes: script.length,
     script,
     sampleProbe

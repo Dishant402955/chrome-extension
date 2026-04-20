@@ -6,19 +6,56 @@ let recording        = false;
 let recordingTab     = null;
 let recordingQuality = null;
 let keepAliveId      = null;
-let panelPort        = null;
 
-// Accumulate ALL data across page navigations
+// Accumulate ALL data across page navigations in background.
+// Content scripts die on navigation; background does not.
 let allSamples = [];
 let allEvents  = [];
 let viewport   = null;
 
-// ── Open side panel ──────────────────────────────────────────
+// Floating panel window
+let panelWinId = null;
+let panelPort  = null;
+
+// ── Open / focus floating panel on toolbar click ─────────────
 chrome.action.onClicked.addListener((tab) => {
-  chrome.sidePanel.open({ windowId: tab.windowId });
+  if (panelWinId !== null) {
+    // Already open — just focus it
+    chrome.windows.update(panelWinId, { focused: true }, () => {
+      if (chrome.runtime.lastError) {
+        // Window was closed externally — recreate
+        panelWinId = null;
+        openPanel();
+      }
+    });
+  } else {
+    openPanel();
+  }
 });
 
-// ── Panel port ───────────────────────────────────────────────
+function openPanel() {
+  chrome.windows.create({
+    url:    "panel.html",
+    type:   "popup",       // floating draggable window, not attached to browser
+    width:  300,
+    height: 400,
+    focused: true
+  }, (win) => {
+    panelWinId = win.id;
+  });
+}
+
+// Track when the panel window is closed
+chrome.windows.onRemoved.addListener((winId) => {
+  if (winId === panelWinId) {
+    panelWinId = null;
+    panelPort  = null;
+    // If recording was active when panel closed, keep recording
+    // (user can reopen panel to stop)
+  }
+});
+
+// ── Panel port (long-lived, survives multiple messages) ───────
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "recorder-panel") return;
   panelPort = port;
@@ -30,11 +67,13 @@ function notifyPanel(msg) {
   try { panelPort.postMessage(msg); } catch (_) {}
 }
 
-// ── Keep-alive ───────────────────────────────────────────────
+// ── Keep MV3 service worker alive during recording ────────────
 function startKeepAlive() {
   if (keepAliveId) return;
   keepAliveId = setInterval(() => {
-    chrome.storage.session.set({ _ka: Date.now() }, () => { void chrome.runtime.lastError; });
+    chrome.storage.session.set({ _ka: Date.now() }, () => {
+      void chrome.runtime.lastError;
+    });
   }, 20_000);
 }
 function stopKeepAlive() {
@@ -47,26 +86,38 @@ function sendToTab(tabId, msg) {
 }
 
 // ── Re-inject on navigation ───────────────────────────────────
+// When the recording tab navigates, the old content script dies.
+// We send RESUME to the new one so data collection continues.
+// We retry a few times because 'complete' can fire before
+// content scripts are actually ready.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!recording || tabId !== recordingTab) return;
-  if (changeInfo.status === "complete") {
+  if (changeInfo.status !== "complete") return;
+
+  const resumeMsg = {
+    type:      "RESUME",
+    quality:   recordingQuality,
+    startedAt: allSamples.length
+      ? allSamples[allSamples.length - 1].time
+      : 0
+  };
+
+  // Try immediately, then retry after 500ms and 1500ms
+  // in case content scripts weren't ready yet
+  [300, 800, 1800].forEach(delay => {
     setTimeout(() => {
-      sendToTab(tabId, {
-        type:      "RESUME",
-        quality:   recordingQuality,
-        startedAt: allSamples.length ? allSamples[allSamples.length - 1].time : 0,
-        viewport
-      });
-    }, 250);
-  }
+      if (!recording || recordingTab !== tabId) return;
+      sendToTab(tabId, resumeMsg);
+    }, delay);
+  });
 });
 
 // ── Download helper ───────────────────────────────────────────
-function downloadJson(obj, filename) {
+function downloadJson(obj, filename, saveAs = false) {
   const blob   = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
   const reader = new FileReader();
   reader.onload = () => {
-    chrome.downloads.download({ url: reader.result, filename, saveAs: false });
+    chrome.downloads.download({ url: reader.result, filename, saveAs });
   };
   reader.readAsDataURL(blob);
 }
@@ -74,6 +125,7 @@ function downloadJson(obj, filename) {
 // ── Message hub ──────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg) => {
 
+  // ── START ────────────────────────────────────────────────
   if (msg.type === "START") {
     const { tabId, quality } = msg;
     recording        = true;
@@ -83,6 +135,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     allEvents        = [];
     viewport         = null;
     startKeepAlive();
+
     chrome.tabs.update(tabId, { active: true }, () => {
       if (chrome.runtime.lastError) {
         notifyPanel({ type: "ERROR", message: "Could not switch to tab." });
@@ -92,10 +145,14 @@ chrome.runtime.onMessage.addListener((msg) => {
     });
   }
 
+  // ── STOP ─────────────────────────────────────────────────
   else if (msg.type === "STOP") {
     recording = false;
     stopKeepAlive();
+
     if (recordingTab) {
+      // Send full accumulated data with STOP so content.js can
+      // generate the script even if its local data is incomplete
       sendToTab(recordingTab, {
         type:        "STOP",
         accumulated: { samples: allSamples, events: allEvents, viewport }
@@ -103,15 +160,18 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
   }
 
+  // ── Content script confirmed start ───────────────────────
   else if (msg.type === "RECORDING_STARTED") {
     if (msg.data?.viewport) viewport = msg.data.viewport;
     notifyPanel({ type: "RECORDING_STARTED" });
   }
 
+  // ── Content script resumed after navigation ───────────────
   else if (msg.type === "RECORDING_RESUMED") {
     if (msg.data?.viewport) viewport = msg.data.viewport;
   }
 
+  // ── Sample accumulation ───────────────────────────────────
   else if (msg.type === "sample" && recording) {
     allSamples.push(msg.data);
     if (allSamples.length % 20 === 0) {
@@ -119,30 +179,37 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
   }
 
+  // ── Event accumulation ────────────────────────────────────
   else if (msg.type === "event" && recording) {
     allEvents.push(msg.data);
   }
 
+  // ── Final data (video + script from content.js) ───────────
   else if (msg.type === "FINAL_DATA") {
     recordingTab = null;
     const { screenDataUrl, script } = msg.data;
 
-    // script.json — the editor-facing output
-    downloadJson(script, "script.json");
+    // script.json — editor output, ask where to save
+    downloadJson(script, "script.json", true);
 
-    // screen.webm
     if (screenDataUrl) {
-      chrome.downloads.download({ url: screenDataUrl, filename: "screen.webm", saveAs: true });
+      chrome.downloads.download({
+        url:      screenDataUrl,
+        filename: "screen.webm",
+        saveAs:   true
+      });
     }
 
     notifyPanel({ type: "RECORDING_DONE" });
   }
 
+  // ── Debug data ────────────────────────────────────────────
   else if (msg.type === "DEBUG_DATA") {
-    // debug.json — automatically saved alongside script.json, no save dialog
-    downloadJson(msg.data, "debug.json");
+    // Auto-saved, no dialog
+    downloadJson(msg.data, "debug.json", false);
   }
 
+  // ── Error ─────────────────────────────────────────────────
   else if (msg.type === "CONTENT_ERROR") {
     recording = false;
     stopKeepAlive();
