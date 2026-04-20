@@ -1,28 +1,24 @@
 // ============================================================
-//  content.js — Screen recorder + data collector
-//  No webcam. Quality settings come from START message.
+//  content.js
 // ============================================================
 
 let localSamples  = [];
 let localEvents   = [];
 let recording     = false;
 let startTime     = 0;
+let globalOffset  = 0;
 
 let screenStream   = null;
 let screenRecorder = null;
 let screenChunks   = [];
 
-// Mouse state
 let lastX          = 0;
 let lastY          = 0;
 let lastSampleTime = performance.now();
 let recentSamples  = [];
 
-// Scroll accumulator (reset each sample tick)
-let scrollAccum   = 0;
-let lastScrollY   = window.scrollY;
-
-// Sample interval handle
+let scrollAccum  = 0;
+let lastScrollY  = window.scrollY;
 let sampleInterval = null;
 
 // ── Safe send ─────────────────────────────────────────────────
@@ -32,46 +28,40 @@ function safeSend(msg) {
   } catch (_) {}
 }
 
-// ── Element type (mirrors generator logic) ────────────────────
-const TAG_TYPE_MAP = {
-  input: "input", textarea: "input", select: "input",
-  button: "interactive", a: "interactive",
-  nav: "nav", menu: "nav", header: "nav",
-  code: "code", pre: "code",
-  main: "content", article: "content", section: "content", p: "content",
-  form: "form", fieldset: "form",
-  table: "table", thead: "table", tbody: "table", tr: "table", td: "table", th: "table",
-  ul: "list", ol: "list", li: "list",
-  img: "media", video: "media", canvas: "media", svg: "media",
-  dialog: "modal", aside: "modal",
-};
-
-function getElementType(chain) {
-  if (!chain?.length) return "unknown";
-  for (const el of chain) {
-    const tag = (el.tag || "").toLowerCase();
-    if (TAG_TYPE_MAP[tag]) return TAG_TYPE_MAP[tag];
-  }
-  const first = chain[0];
-  if (first?.textLength > 300) return "content";
-  if (first?.textLength > 0 && first?.textLength < 80) return "label";
-  return "generic";
-}
-
 // ── Element chain ─────────────────────────────────────────────
+// Depth 15: GitHub / React / Material UI apps can have 12+ nesting
+// levels before reaching the meaningful layout card.
+// The generator uses this chain to find the "card" boundary,
+// so shallow chains mean card detection always fails.
 function getElementChain(el) {
   if (!el) return [];
-  const chain = [];
-  let current = el;
-  let depth   = 0;
+  const chain   = [];
+  let   current = el;
+  let   depth   = 0;
 
-  while (current && depth < 5) {
+  while (current && current !== document.documentElement && depth < 15) {
     const rect = current.getBoundingClientRect();
-    chain.push({
-      tag:        current.tagName,
-      textLength: (current.innerText || "").trim().length,
-      boundingBox: { x: rect.left, y: rect.top, w: rect.width, h: rect.height }
-    });
+
+    // Include element even if off-screen — generator handles that.
+    // Only skip truly invisible (0×0) elements.
+    if (rect.width > 0 || rect.height > 0) {
+      chain.push({
+        tag:  (current.tagName || "").toUpperCase(),
+        role: current.getAttribute("role") || null,
+        // className as array of tokens (easier to read in debug)
+        cls:  current.className
+                ? String(current.className).trim().split(/\s+/).slice(0, 6)
+                : [],
+        textLength: (current.innerText || "").trim().length,
+        boundingBox: {
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          w: Math.round(rect.width),
+          h: Math.round(rect.height)
+        }
+      });
+    }
+
     current = current.parentElement;
     depth++;
   }
@@ -84,47 +74,39 @@ function sample() {
   if (!recording) return;
 
   const now  = performance.now();
-  const time = now - startTime;
-
-  const x = lastX / window.innerWidth;
-  const y = lastY / window.innerHeight;
+  const time = globalOffset + (now - startTime);
 
   const el    = document.elementFromPoint(lastX, lastY);
   const chain = getElementChain(el);
-  const etype = getElementType(chain);
 
   const dt   = now - lastSampleTime;
   const prev = recentSamples.at(-1);
   const dx   = lastX - (prev?.rawX ?? lastX);
   const dy   = lastY - (prev?.rawY ?? lastY);
-
-  const velocity = dt > 0 ? Math.sqrt(dx * dx + dy * dy) / dt : 0;
+  const vel  = dt > 0 ? Math.sqrt(dx * dx + dy * dy) / dt : 0;
 
   const s = {
     time,
-    x,
-    y,
-    rawX:        lastX,
-    rawY:        lastY,
-    velocity,
-    elementType: etype,
+    x:            lastX / window.innerWidth,
+    y:            lastY / window.innerHeight,
+    rawX:         lastX,
+    rawY:         lastY,
+    velocity:     vel,
     elementChain: chain,
-    scrollDelta: scrollAccum   // accumulated scroll since last sample
+    scrollDelta:  scrollAccum
   };
 
-  // Reset scroll accumulator
-  scrollAccum = 0;
+  scrollAccum    = 0;
+  lastSampleTime = now;
 
   recentSamples.push(s);
-  if (recentSamples.length > 20) recentSamples.shift();
+  if (recentSamples.length > 30) recentSamples.shift();
 
   localSamples.push(s);
   safeSend({ type: "sample", data: s });
-
-  lastSampleTime = now;
 }
 
-// ── DOM event listeners ───────────────────────────────────────
+// ── DOM listeners ─────────────────────────────────────────────
 document.addEventListener("mousemove", (e) => {
   lastX = e.clientX;
   lastY = e.clientY;
@@ -132,182 +114,185 @@ document.addEventListener("mousemove", (e) => {
 
 document.addEventListener("scroll", () => {
   if (!recording) return;
-  const currentY = window.scrollY;
-  scrollAccum   += currentY - lastScrollY;
-  lastScrollY    = currentY;
+  const y     = window.scrollY;
+  scrollAccum += y - lastScrollY;
+  lastScrollY  = y;
 }, { passive: true });
 
 document.addEventListener("click", (e) => {
   if (!recording) return;
-
   const chain = getElementChain(document.elementFromPoint(e.clientX, e.clientY));
-
-  const eventData = {
+  const ev = {
     type:         "click",
-    time:         performance.now() - startTime,
+    time:         globalOffset + (performance.now() - startTime),
     x:            e.clientX / window.innerWidth,
     y:            e.clientY / window.innerHeight,
     elementChain: chain,
-    elementType:  getElementType(chain),
-    context:      [...recentSamples]
+    context:      recentSamples.slice(-6)
   };
-
-  localEvents.push(eventData);
-  safeSend({ type: "event", data: eventData });
+  localEvents.push(ev);
+  safeSend({ type: "event", data: ev });
 });
 
 document.addEventListener("keydown", (e) => {
   if (!recording) return;
-
-  const eventData = {
-    type:      "keydown",
-    time:      performance.now() - startTime,
-    // Mask actual characters — only care about key category
-    keyType:   e.key.length === 1 ? "char"
-             : e.key === "Enter" ? "enter"
-             : e.key === "Backspace" ? "backspace"
-             : e.key === "Tab" ? "tab"
-             : "other",
+  const ev = {
+    type:       "keydown",
+    time:       globalOffset + (performance.now() - startTime),
+    keyType:    e.key.length === 1 ? "char"
+              : e.key === "Enter"     ? "enter"
+              : e.key === "Backspace" ? "backspace"
+              : e.key === "Tab"       ? "tab"
+              : "other",
     isModifier: e.ctrlKey || e.altKey || e.metaKey
   };
-
-  localEvents.push(eventData);
-  safeSend({ type: "event", data: eventData });
+  localEvents.push(ev);
+  safeSend({ type: "event", data: ev });
 }, { passive: true });
 
 document.addEventListener("focusin", (e) => {
   if (!recording) return;
-
   const chain = getElementChain(e.target);
-
-  const eventData = {
+  const ev = {
     type:         "focus",
-    time:         performance.now() - startTime,
-    elementChain: chain,
-    elementType:  getElementType(chain)
+    time:         globalOffset + (performance.now() - startTime),
+    elementChain: chain
   };
-
-  localEvents.push(eventData);
-  safeSend({ type: "event", data: eventData });
+  localEvents.push(ev);
+  safeSend({ type: "event", data: ev });
 }, { passive: true });
 
 // ── Blob → data URL ───────────────────────────────────────────
 function blobToDataURL(blob) {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
+    const reader   = new FileReader();
     reader.onload  = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("FileReader failed"));
+    reader.onerror = () => reject(new Error("FileReader error"));
     reader.readAsDataURL(blob);
   });
 }
 
-// ── START / STOP ──────────────────────────────────────────────
+function startSampling() {
+  if (sampleInterval) clearInterval(sampleInterval);
+  lastSampleTime = performance.now();
+  sampleInterval = setInterval(sample, 50);
+}
+
+// ── Message listener ──────────────────────────────────────────
 chrome.runtime.onMessage.addListener(async (msg) => {
 
-  // ────────────────────── START ──────────────────────────────
+  // ──────────── START ───────────────────────────────────────
   if (msg.type === "START") {
     const quality = msg.quality || { width: 1280, height: 720, bitrate: 4_000_000 };
 
     try {
       screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width:     { ideal: quality.width  },
-          height:    { ideal: quality.height },
-          frameRate: { ideal: 30 }
-        },
+        video: { width: { ideal: quality.width }, height: { ideal: quality.height }, frameRate: { ideal: 30 } },
         audio: false
       });
-    } catch (err) {
+    } catch (_) {
       safeSend({ type: "CONTENT_ERROR", message: "Screen capture cancelled or denied." });
       return;
     }
 
-    // If user closed the picker without choosing, getDisplayMedia resolves with
-    // an empty stream or ends immediately — guard against it.
-    if (!screenStream || screenStream.getTracks().length === 0) {
+    if (!screenStream?.getTracks().length) {
       safeSend({ type: "CONTENT_ERROR", message: "No screen source selected." });
       return;
     }
 
-    // Handle the user stopping the share via browser UI
     screenStream.getTracks()[0].onended = () => {
       if (recording) safeSend({ type: "STOP" });
     };
 
-    // Reset state
     localSamples  = [];
     localEvents   = [];
     screenChunks  = [];
     recentSamples = [];
     scrollAccum   = 0;
     lastScrollY   = window.scrollY;
+    globalOffset  = 0;
 
-    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
-      ? "video/webm;codecs=vp9"
-      : "video/webm";
+    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+      ? "video/webm;codecs=vp9" : "video/webm";
 
     screenRecorder = new MediaRecorder(screenStream, {
-      mimeType,
-      videoBitsPerSecond: quality.bitrate
+      mimeType: mime, videoBitsPerSecond: quality.bitrate
     });
-
     screenRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) screenChunks.push(e.data);
     };
-
     screenRecorder.start(1000);
 
-    startTime      = performance.now();
-    lastSampleTime = startTime;
-    recording      = true;
-
-    // Start sample loop
-    if (sampleInterval) clearInterval(sampleInterval);
-    sampleInterval = setInterval(sample, 50);
+    startTime = performance.now();
+    recording = true;
+    startSampling();
 
     safeSend({
       type: "RECORDING_STARTED",
       data: { viewport: { width: window.innerWidth, height: window.innerHeight } }
     });
-
-    console.log("[Recorder] Started —", mimeType, quality);
   }
 
-  // ────────────────────── STOP ───────────────────────────────
-  if (msg.type === "STOP") {
+  // ──────────── RESUME (after page navigation) ──────────────
+  else if (msg.type === "RESUME") {
+    globalOffset  = msg.startedAt || 0;
+    localSamples  = [];
+    localEvents   = [];
+    recentSamples = [];
+    scrollAccum   = 0;
+    lastScrollY   = window.scrollY;
+    startTime     = performance.now();
+    recording     = true;
+    startSampling();
+    safeSend({
+      type: "RECORDING_RESUMED",
+      data: { viewport: { width: window.innerWidth, height: window.innerHeight } }
+    });
+  }
+
+  // ──────────── STOP ────────────────────────────────────────
+  else if (msg.type === "STOP") {
     if (!recording) return;
 
     recording = false;
-
-    // Stop sample loop immediately
     if (sampleInterval) { clearInterval(sampleInterval); sampleInterval = null; }
 
-    // Wait for recorder to finish flushing
-    await new Promise(res => {
-      screenRecorder.onstop = res;
-      screenRecorder.stop();
-    });
+    // Use background's accumulated data (survives navigation)
+    const bgSamples = msg.accumulated?.samples || [];
+    const bgEvents  = msg.accumulated?.events  || [];
+    const bgVP      = msg.accumulated?.viewport;
 
-    const screenBlob    = new Blob(screenChunks, { type: "video/webm" });
-    const screenDataUrl = await blobToDataURL(screenBlob);
+    const finalSamples = bgSamples.length ? bgSamples : localSamples;
+    const finalEvents  = bgEvents.length  ? bgEvents  : localEvents;
+    const finalVP      = bgVP || { width: window.innerWidth, height: window.innerHeight };
 
-    const script = generateScript({
-      samples: localSamples,
-      events:  localEvents,
-      meta:    { viewport: { width: window.innerWidth, height: window.innerHeight } }
-    });
+    const inputData = {
+      samples: finalSamples,
+      events:  finalEvents,
+      meta:    { viewport: finalVP }
+    };
 
-    safeSend({
-      type: "FINAL_DATA",
-      data: { screenDataUrl, script }
-    });
+    // Generate script
+    const script = generateScript(inputData);
 
-    // Release screen capture
+    // Generate debug report (separate function in generator.js)
+    const debugReport = generateDebugReport(inputData, script);
+
+    // Get video
+    let screenDataUrl = null;
+    if (screenRecorder && screenRecorder.state !== "inactive") {
+      await new Promise(res => { screenRecorder.onstop = res; screenRecorder.stop(); });
+    }
+    if (screenChunks.length) {
+      screenDataUrl = await blobToDataURL(new Blob(screenChunks, { type: "video/webm" }));
+    }
+
+    safeSend({ type: "FINAL_DATA",  data: { screenDataUrl, script } });
+    safeSend({ type: "DEBUG_DATA",  data: debugReport });
+
     screenStream?.getTracks().forEach(t => t.stop());
     screenStream = null;
 
-    console.log(
-      `[Recorder] Stopped — ${localSamples.length} samples, ${localEvents.length} events`
-    );
+    console.log(`[Recorder] Done — ${finalSamples.length} samples, ${finalEvents.length} events, ${script.length} keyframes`);
   }
 });
