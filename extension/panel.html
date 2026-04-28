@@ -2,217 +2,99 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Recorder</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-
 :root{
-  --bg:      #141517;
-  --sur:     #1e2023;
-  --sur2:    #27292d;
-  --bdr:     #2c2f34;
-  --bdr2:    #3a3e45;
-  --acc:     #e03535;
-  --acc2:    #7a1a1a;
-  --grn:     #2ea84a;
-  --txt:     #b8bcc4;
-  --txt2:    #525660;
-  --txth:    #eceef2;
-  --mono:    ui-monospace,'Cascadia Code','Fira Code',monospace;
+  --bg:#141517;--sur:#1e2023;--sur2:#27292d;
+  --bdr:#2c2f34;--bdr2:#3a3e45;
+  --acc:#e03535;--acc2:#7a1a1a;--grn:#2ea84a;
+  --txt:#b8bcc4;--txt2:#525660;--txth:#eceef2;
+  --mono:ui-monospace,'Cascadia Code','Fira Code',monospace;
 }
+html,body{width:280px;background:var(--bg);color:var(--txt);font-family:var(--mono);font-size:11px;line-height:1.45;overflow:hidden;user-select:none}
 
-html,body{
-  width:300px;
-  background:var(--bg);
-  color:var(--txt);
-  font-family:var(--mono);
-  font-size:11px;
-  line-height:1.45;
-  overflow:hidden;
-  user-select:none;
-}
-
-/* ── Drag handle / header ── */
-.hdr{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:8px 10px;
-  background:var(--sur);
-  border-bottom:1px solid var(--bdr);
-  cursor:default;
-}
-.hdr-left{display:flex;align-items:center;gap:7px}
-.dot{
-  width:7px;height:7px;border-radius:50%;
-  background:var(--acc);flex-shrink:0;
-  transition:box-shadow .3s;
-}
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:9px 11px;background:var(--sur);border-bottom:1px solid var(--bdr)}
+.hdr-l{display:flex;align-items:center;gap:7px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--acc);flex-shrink:0}
 .dot.live{animation:pulse 1s ease-in-out infinite}
-@keyframes pulse{
-  0%,100%{box-shadow:0 0 0 0 rgba(224,53,53,.7)}
-  50%    {box-shadow:0 0 0 5px rgba(224,53,53,0)}
-}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(224,53,53,.7)}50%{box-shadow:0 0 0 5px rgba(224,53,53,0)}}
 .title{color:var(--txth);font-size:10px;letter-spacing:.14em;text-transform:uppercase}
+.ver{color:var(--txt2);font-size:9px}
 
-.btn-ico{
-  background:none;border:1px solid var(--bdr);
-  color:var(--txt2);font-family:var(--mono);font-size:10px;
-  cursor:pointer;padding:2px 6px;
-  transition:border-color .15s,color .15s;
-}
-.btn-ico:hover{border-color:var(--bdr2);color:var(--txt)}
+.body{padding:11px;display:flex;flex-direction:column;gap:9px}
+.lbl{color:var(--txt2);font-size:9px;letter-spacing:.14em;text-transform:uppercase;margin-bottom:5px}
 
-/* ── Body ── */
-.body{padding:10px;display:flex;flex-direction:column;gap:10px}
-
-.lbl{
-  color:var(--txt2);font-size:9px;letter-spacing:.14em;
-  text-transform:uppercase;margin-bottom:5px;
-}
-
-/* ── Tab list ── */
-.tabs{
-  display:flex;flex-direction:column;gap:1px;
-  max-height:160px;overflow-y:auto;
-}
+.tabs{display:flex;flex-direction:column;gap:1px;max-height:140px;overflow-y:auto}
 .tabs::-webkit-scrollbar{width:3px}
-.tabs::-webkit-scrollbar-track{background:transparent}
 .tabs::-webkit-scrollbar-thumb{background:var(--bdr)}
-
-.tab{
-  display:flex;align-items:center;gap:7px;
-  padding:5px 7px;cursor:pointer;
-  border:1px solid transparent;
-  transition:background .1s,border-color .1s;
-}
+.tab{display:flex;align-items:center;gap:7px;padding:5px 7px;cursor:pointer;border:1px solid transparent;transition:background .1s,border-color .1s}
 .tab:hover{background:var(--sur2);border-color:var(--bdr)}
 .tab.sel{background:var(--sur2);border-color:var(--acc2)}
-
 .tab-bar{width:2px;height:12px;background:var(--acc);flex-shrink:0;opacity:0;transition:opacity .15s}
 .tab.sel .tab-bar{opacity:1}
-
 .tab-fav{width:13px;height:13px;flex-shrink:0;object-fit:contain}
-.tab-fav-ph{
-  width:13px;height:13px;flex-shrink:0;
-  border:1px solid var(--bdr);display:flex;
-  align-items:center;justify-content:center;
-  color:var(--txt2);font-size:8px;
-}
+.tab-fav-ph{width:13px;height:13px;flex-shrink:0;border:1px solid var(--bdr);display:flex;align-items:center;justify-content:center;color:var(--txt2);font-size:8px}
 .tab-info{flex:1;min-width:0}
-.tab-name{
-  color:var(--txth);white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis;
-}
-.tab-url{
-  color:var(--txt2);font-size:9px;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis;
-}
+.tab-name{color:var(--txth);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab-url{color:var(--txt2);font-size:9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tab-empty{padding:8px 7px;color:var(--txt2)}
 
-/* ── Quality ── */
-.quals{display:flex;gap:4px}
-.qual{
-  flex:1;padding:5px 4px;text-align:center;
-  border:1px solid var(--bdr);cursor:pointer;
-  transition:background .1s,border-color .1s,color .1s;
-  color:var(--txt2);
-}
-.qual:hover{border-color:var(--bdr2);color:var(--txt)}
-.qual.sel{border-color:var(--txth);color:var(--txth)}
-.qual-name{font-size:10px;font-weight:600;letter-spacing:.04em}
-.qual-desc{font-size:8px;margin-top:1px;color:inherit;opacity:.7}
-
-/* ── Divider ── */
 .div{height:1px;background:var(--bdr)}
 
-/* ── Rec info (shown while recording) ── */
-.rec-info{
-  display:none;flex-direction:column;gap:3px;
-  padding:7px;background:var(--sur2);border:1px solid var(--bdr);
-}
-.rec-info.show{display:flex}
-.ri{display:flex;justify-content:space-between;align-items:center}
-.ri-k{color:var(--txt2);font-size:8px;letter-spacing:.1em}
-.ri-v{color:var(--txth);font-size:10px}
+.stats{display:none;flex-direction:column;gap:3px;padding:7px;background:var(--sur2);border:1px solid var(--bdr)}
+.stats.show{display:flex}
+.st{display:flex;justify-content:space-between}
+.st-k{color:var(--txt2);font-size:9px}
+.st-v{color:var(--txth);font-size:10px}
 
-/* ── Footer / controls ── */
-.foot{
-  padding:8px 10px;
-  background:var(--sur);
-  border-top:1px solid var(--bdr);
-  display:flex;flex-direction:column;gap:6px;
-}
-.status-row{
-  display:flex;justify-content:space-between;align-items:center;
-}
+.foot{padding:9px 11px;background:var(--sur);border-top:1px solid var(--bdr);display:flex;flex-direction:column;gap:6px}
+.status-row{display:flex;justify-content:space-between;align-items:center}
 .status{color:var(--txt2);font-size:9px;letter-spacing:.08em}
 .status.live{color:var(--acc)}
 .status.done{color:var(--grn)}
-.status.err {color:#e08c00}
-.timer{color:var(--txth);font-size:12px;font-feature-settings:"tnum";letter-spacing:.04em}
+.status.err{color:#e08c00}
+.timer{color:var(--txth);font-size:12px;font-feature-settings:"tnum"}
 
-.btn{
-  width:100%;padding:8px;
-  font-family:var(--mono);font-size:10px;
-  letter-spacing:.1em;text-transform:uppercase;
-  border:1px solid;cursor:pointer;
-  transition:background .15s,color .15s,opacity .15s;
-}
+.btn{width:100%;padding:8px;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;border:1px solid;cursor:pointer;transition:background .15s,color .15s,opacity .15s}
 .btn:disabled{opacity:.32;cursor:not-allowed}
-
-.btn-start{
-  background:transparent;border-color:var(--grn);color:var(--grn);
-}
+.btn-start{background:transparent;border-color:var(--grn);color:var(--grn)}
 .btn-start:not(:disabled):hover{background:var(--grn);color:#fff}
-
-.btn-stop{
-  background:transparent;border-color:var(--acc);color:var(--acc);
-  animation:blink-bdr 1.5s ease-in-out infinite;
-}
+.btn-stop{background:transparent;border-color:var(--acc);color:var(--acc);animation:bb 1.5s ease-in-out infinite}
 .btn-stop:not(:disabled):hover{background:var(--acc);color:#fff}
-@keyframes blink-bdr{
-  0%,100%{border-color:var(--acc)}
-  50%    {border-color:var(--acc2)}
-}
+@keyframes bb{0%,100%{border-color:var(--acc)}50%{border-color:var(--acc2)}}
+
+.hint{color:var(--txt2);font-size:9px;text-align:center;line-height:1.5}
 </style>
 </head>
 <body>
 
 <div class="hdr">
-  <div class="hdr-left">
+  <div class="hdr-l">
     <div class="dot" id="dot"></div>
     <span class="title">Recorder</span>
   </div>
-  <div style="display:flex;gap:5px;align-items:center">
-    <span style="color:var(--txt2);font-size:9px">v3</span>
-    <button class="btn-ico" id="btnRefresh" title="Refresh tab list">↺</button>
+  <div style="display:flex;gap:6px;align-items:center">
+    <span class="ver">v4</span>
+    <button style="background:none;border:1px solid var(--bdr);color:var(--txt2);font-family:var(--mono);font-size:10px;cursor:pointer;padding:2px 6px" id="btnRefresh" title="Refresh">↺</button>
   </div>
 </div>
 
 <div class="body">
-
   <div>
     <div class="lbl">Capture tab</div>
-    <div class="tabs" id="tabList">
-      <div class="tab-empty">Loading…</div>
-    </div>
+    <div class="tabs" id="tabList"><div class="tab-empty">Loading…</div></div>
   </div>
 
   <div class="div"></div>
 
-  <div>
-    <div class="lbl">Quality</div>
-    <div class="quals" id="qualList"></div>
+  <div class="stats" id="stats">
+    <div class="st"><span class="st-k">TAB</span><span class="st-v" id="stTab">—</span></div>
+    <div class="st"><span class="st-k">SAMPLES</span><span class="st-v" id="stSamples">0</span></div>
+    <div class="st"><span class="st-k">EVENTS</span><span class="st-v" id="stEvents">0</span></div>
   </div>
 
-  <div class="rec-info" id="recInfo">
-    <div class="ri"><span class="ri-k">TAB</span><span class="ri-v" id="riTab">—</span></div>
-    <div class="ri"><span class="ri-k">QUALITY</span><span class="ri-v" id="riQ">—</span></div>
-    <div class="ri"><span class="ri-k">SAMPLES</span><span class="ri-v" id="riSamples">0</span></div>
-  </div>
-
+  <div class="hint" id="hint">Panel minimizes on start so the recording tab stays focused.</div>
 </div>
 
 <div class="foot">
@@ -220,8 +102,8 @@ html,body{
     <span class="status" id="statusEl">READY</span>
     <span class="timer"  id="timerEl"></span>
   </div>
-  <button class="btn btn-start" id="btnStart">▶  Start</button>
-  <button class="btn btn-stop"  id="btnStop" style="display:none">⏹  Stop</button>
+  <button class="btn btn-start" id="btnStart">▶  Start Logging</button>
+  <button class="btn btn-stop"  id="btnStop" style="display:none">⏹  Stop &amp; Save Log</button>
 </div>
 
 <script src="panel.js"></script>

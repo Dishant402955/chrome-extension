@@ -1,13 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Recorder",
-  "version": "3.0",
+  "version": "4.0",
   "action": {
     "default_title": "Open Recorder"
   },
   "permissions": [
-    "activeTab",
-    "scripting",
     "tabs",
     "storage",
     "downloads",
@@ -20,7 +18,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["generator.js", "content.js"]
+      "js": ["content.js"]
     }
   ]
 }
