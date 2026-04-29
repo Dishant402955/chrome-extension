@@ -17,6 +17,20 @@
 const fs   = require("fs");
 const path = require("path");
 
+const FILL      = 0.85;
+const SCALE_MAX = 2.50;   // aggressive
+const SCALE_MIN = 1.00;
+const MIN_FRAC  = 0.003;  // 0.3% — pick up small buttons too
+const MAX_FRAC  = 0.70;   // 70% — ignore full-page containers
+
+const DWELL_N    = 10;
+const ZONE_POS   = 0.07;  // manhattan distance threshold
+const ZONE_SCALE = 0.12;  // scale threshold
+
+const KF_POS   = 0.008;
+const KF_SCALE = 0.015;
+const MIN_KF   = 0.25;    // seconds
+
 const inputPath  = process.argv[2];
 const outputPath = process.argv[3] || inputPath.replace(/\.json$/, "_script.json");
 
@@ -133,11 +147,7 @@ function buildPoints(samples, events) {
 //   Element anchor keeps frame stable; cursor pull keeps it pointed
 //   at what the user is actually looking at.
 
-const FILL      = 0.85;
-const SCALE_MAX = 2.50;   // aggressive
-const SCALE_MIN = 1.00;
-const MIN_FRAC  = 0.003;  // 0.3% — pick up small buttons too
-const MAX_FRAC  = 0.70;   // 70% — ignore full-page containers
+
 
 function pointToZoom(point, vp) {
   const chain  = point.elementChain || [];
@@ -204,9 +214,7 @@ function pointToZoom(point, vp) {
 // This means the camera only commits to a new position after
 // the cursor settles there for half a second.
 
-const DWELL_N    = 10;
-const ZONE_POS   = 0.07;  // manhattan distance threshold
-const ZONE_SCALE = 0.12;  // scale threshold
+
 
 function stabilize(targets) {
   if (!targets.length) return [];
@@ -261,9 +269,7 @@ function stabilize(targets) {
 // into one keyframe. A new keyframe only emits when the
 // stabilized values actually change (= a zone commit happened).
 
-const KF_POS   = 0.008;
-const KF_SCALE = 0.015;
-const MIN_KF   = 0.25;    // seconds
+
 
 function collapse(stable, vp) {
   if (!stable.length) return [];
