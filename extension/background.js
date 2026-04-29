@@ -1,5 +1,5 @@
 // ============================================================
-//  background.js — log accumulator only
+//  background.js
 // ============================================================
 
 let recording        = false;
@@ -13,7 +13,7 @@ let allSamples = [];
 let allEvents  = [];
 let viewport   = null;
 
-// ── Panel window ──────────────────────────────────────────────
+// ── Panel ─────────────────────────────────────────────────────
 chrome.action.onClicked.addListener(() => {
   if (panelWinId !== null) {
     chrome.windows.update(panelWinId, { focused: true, state: "normal" }, () => {
@@ -26,7 +26,7 @@ chrome.action.onClicked.addListener(() => {
 
 function openPanel() {
   chrome.windows.create(
-    { url: "panel.html", type: "popup", width: 280, height: 340, focused: true },
+    { url: "panel.html", type: "popup", width: 300, height: 380, focused: true },
     (win) => { panelWinId = win.id; }
   );
 }
@@ -35,7 +35,6 @@ chrome.windows.onRemoved.addListener((id) => {
   if (id === panelWinId) { panelWinId = null; panelPort = null; }
 });
 
-// ── Panel port ────────────────────────────────────────────────
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "recorder-panel") return;
   panelPort = port;
@@ -60,55 +59,40 @@ function sendToTab(tabId, msg) {
   chrome.tabs.sendMessage(tabId, msg, () => { void chrome.runtime.lastError; });
 }
 
-// ── Re-inject on navigation ───────────────────────────────────
+// ── Re-inject after navigation ────────────────────────────────
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!recording || tabId !== recordingTab) return;
   if (changeInfo.status !== "complete") return;
-  const resumeMsg = {
-    type:      "RESUME",
-    startedAt: allSamples.length ? allSamples[allSamples.length - 1].time : 0
-  };
+  const resumeMsg = { type: "RESUME", startedAt: allSamples.length ? allSamples[allSamples.length - 1].time : 0 };
   [300, 900, 2000].forEach(d => setTimeout(() => {
     if (!recording || recordingTab !== tabId) return;
     sendToTab(tabId, resumeMsg);
   }, d));
 });
 
-// ── Download log.json ─────────────────────────────────────────
-function downloadLog() {
-  const log = {
-    viewport,
-    recordedAt:   new Date().toISOString(),
-    sampleCount:  allSamples.length,
-    eventCount:   allEvents.length,
-    durationMs:   allSamples.length > 1
-      ? allSamples[allSamples.length - 1].time - allSamples[0].time
-      : 0,
-    samples: allSamples,
-    events:  allEvents
-  };
+// ── Download helpers ──────────────────────────────────────────
+function downloadDataUrl(dataUrl, filename, saveAs = false) {
+  chrome.downloads.download({ url: dataUrl, filename, saveAs });
+}
 
-  const blob = new Blob([JSON.stringify(log, null, 2)], { type: "application/json" });
+function downloadJson(obj, filename, saveAs = false) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
   const r    = new FileReader();
-  r.onload   = () => chrome.downloads.download({
-    url:      r.result,
-    filename: `log_${Date.now()}.json`,
-    saveAs:   true
-  });
+  r.onload   = () => chrome.downloads.download({ url: r.result, filename, saveAs });
   r.readAsDataURL(blob);
 }
 
 // ── Message hub ──────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg) => {
 
-  // ── START ────────────────────────────────────────────────
   if (msg.type === "START") {
-    const { tabId } = msg;
-    recording    = true;
-    recordingTab = tabId;
-    allSamples   = [];
-    allEvents    = [];
-    viewport     = null;
+    const { tabId, quality } = msg;
+    recording        = true;
+    recordingTab     = tabId;
+    recordingQuality = quality;
+    allSamples       = [];
+    allEvents        = [];
+    viewport         = null;
     startKeepAlive();
 
     chrome.tabs.update(tabId, { active: true }, () => {
@@ -116,35 +100,33 @@ chrome.runtime.onMessage.addListener((msg) => {
         notifyPanel({ type: "ERROR", message: "Could not switch to tab." });
         return;
       }
-      sendToTab(tabId, { type: "START" });
+      sendToTab(tabId, { type: "START", quality });
     });
   }
 
-  // ── STOP ─────────────────────────────────────────────────
   else if (msg.type === "STOP") {
     recording = false;
     stopKeepAlive();
-    if (recordingTab) sendToTab(recordingTab, { type: "STOP" });
+    if (recordingTab) {
+      sendToTab(recordingTab, {
+        type:        "STOP",
+        accumulated: { samples: allSamples, events: allEvents, viewport }
+      });
+    }
   }
 
-  // ── Content script ready ──────────────────────────────────
   else if (msg.type === "RECORDING_STARTED") {
     if (msg.data?.viewport) viewport = msg.data.viewport;
-    notifyPanel({ type: "RECORDING_STARTED" });
+    notifyPanel({ type: "RECORDING_STARTED", hasWebcam: msg.data?.hasWebcam });
 
-    // Focus the recording tab window, then minimize panel
-    // so Chrome doesn't throttle timers in the background tab
+    // Focus recording tab → minimize panel (prevents timer throttle)
     const tabId = recordingTab;
     chrome.tabs.get(tabId, (tab) => {
       if (chrome.runtime.lastError || !tab) return;
       chrome.windows.update(tab.windowId, { focused: true }, () => {
         void chrome.runtime.lastError;
         setTimeout(() => {
-          if (panelWinId) {
-            chrome.windows.update(panelWinId, { state: "minimized" }, () => {
-              void chrome.runtime.lastError;
-            });
-          }
+          if (panelWinId) chrome.windows.update(panelWinId, { state: "minimized" }, () => { void chrome.runtime.lastError; });
         }, 200);
       });
     });
@@ -154,30 +136,32 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (msg.data?.viewport) viewport = msg.data.viewport;
   }
 
-  // ── Data ─────────────────────────────────────────────────
   else if (msg.type === "sample" && recording) {
     allSamples.push(msg.data);
-    if (allSamples.length % 20 === 0) {
-      notifyPanel({ type: "TICK", count: allSamples.length });
-    }
+    if (allSamples.length % 20 === 0) notifyPanel({ type: "TICK", count: allSamples.length });
   }
 
   else if (msg.type === "event" && recording) {
     allEvents.push(msg.data);
   }
 
-  // ── Content script confirmed stop → download log ──────────
-  else if (msg.type === "STOPPED") {
+  // ── Everything done ───────────────────────────────────────
+  else if (msg.type === "FINAL_DATA") {
     recordingTab = null;
-    downloadLog();
-    notifyPanel({ type: "RECORDING_DONE", sampleCount: allSamples.length });
+    const { screenDataUrl, webcamDataUrl, hasWebcam, log } = msg.data;
 
-    // Restore panel
-    if (panelWinId) {
-      chrome.windows.update(panelWinId, { state: "normal", focused: true }, () => {
-        void chrome.runtime.lastError;
-      });
-    }
+    // screen.webm — prompt save dialog
+    if (screenDataUrl) downloadDataUrl(screenDataUrl, "screen.webm", true);
+
+    // webcam.webm — auto-saved alongside
+    if (webcamDataUrl) downloadDataUrl(webcamDataUrl, "webcam.webm", false);
+
+    // log.json — the interaction data for generate.js
+    downloadJson(log, `log_${Date.now()}.json`, true);
+
+    notifyPanel({ type: "RECORDING_DONE", sampleCount: log.sampleCount, hasWebcam });
+
+    if (panelWinId) chrome.windows.update(panelWinId, { state: "normal", focused: true }, () => { void chrome.runtime.lastError; });
   }
 
   else if (msg.type === "CONTENT_ERROR") {
@@ -185,10 +169,6 @@ chrome.runtime.onMessage.addListener((msg) => {
     stopKeepAlive();
     recordingTab = null;
     notifyPanel({ type: "ERROR", message: msg.message });
-    if (panelWinId) {
-      chrome.windows.update(panelWinId, { state: "normal", focused: true }, () => {
-        void chrome.runtime.lastError;
-      });
-    }
+    if (panelWinId) chrome.windows.update(panelWinId, { state: "normal", focused: true }, () => { void chrome.runtime.lastError; });
   }
 });

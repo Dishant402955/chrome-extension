@@ -1,33 +1,22 @@
 #!/usr/bin/env node
 // ============================================================
-//  generate.js — reads a log.json, outputs script.json
+//  generate.js — reads log.json, outputs script.json
 //
 //  Usage:
 //    node generate.js log.json
-//    node generate.js log.json output.json   (custom output path)
+//    node generate.js log.json out.json
 //
 //  Output format (fixed):
-//    [{ t:[startSec,endSec], zoom:{x,y,scale}, webcam:{x,y,w,h} }]
+//  {
+//    "timeline": [
+//      { "t": [startSec, endSec], "zoom": { "x", "y", "scale" }, "webcam": { "x","y","w","h" } }
+//    ]
+//  }
 // ============================================================
 
 const fs   = require("fs");
 const path = require("path");
 
-const FILL      = 0.82;
-const SCALE_MAX = 1.75;
-const SCALE_MIN = 1.00;
-const MIN_FRAC  = 0.005;  // 0.5% of screen area
-const MAX_FRAC  = 0.72;   // 72% of screen area
-
-const DWELL_N     = 12;    // samples to confirm a new zone (~600ms)
-const ZONE_POS    = 0.06;  // max manhattan dist to count as "same zone"
-const ZONE_SCALE  = 0.10;  // max scale diff to count as "same zone"
-
-const KF_POS   = 0.008;  // very tight — stabilizer already did the work
-const KF_SCALE = 0.015;
-const MIN_KF   = 0.25;   // seconds
-
-// ── CLI ───────────────────────────────────────────────────────
 const inputPath  = process.argv[2];
 const outputPath = process.argv[3] || inputPath.replace(/\.json$/, "_script.json");
 
@@ -41,23 +30,24 @@ const log = JSON.parse(fs.readFileSync(inputPath, "utf8"));
 console.log(`\n[generate] Input:    ${inputPath}`);
 console.log(`[generate] Samples:  ${log.samples?.length ?? 0}`);
 console.log(`[generate] Events:   ${log.events?.length  ?? 0}`);
-console.log(`[generate] Duration: ${(log.durationMs / 1000).toFixed(1)}s`);
+console.log(`[generate] Duration: ${((log.durationMs || 0) / 1000).toFixed(1)}s`);
 console.log(`[generate] Viewport: ${log.viewport?.width}×${log.viewport?.height}\n`);
 
-const script = generateScript(log);
+const result = generateScript(log);
 
-fs.writeFileSync(outputPath, JSON.stringify(script, null, 2));
-console.log(`[generate] Keyframes: ${script.length}`);
+fs.writeFileSync(outputPath, JSON.stringify(result, null, 2));
+console.log(`[generate] Keyframes: ${result.timeline.length}`);
 console.log(`[generate] Output:    ${outputPath}\n`);
-script.forEach((kf, i) => {
+
+result.timeline.forEach((kf, i) => {
   console.log(
-    `  [${i}] ${kf.t[0].toFixed(2)}s–${kf.t[1].toFixed(2)}s  ` +
-    `zoom x=${kf.zoom.x.toFixed(3)} y=${kf.zoom.y.toFixed(3)} s=${kf.zoom.scale.toFixed(3)}`
+    `  [${String(i).padStart(2)}] ${kf.t[0].toFixed(2)}s – ${kf.t[1].toFixed(2)}s  ` +
+    `zoom(${kf.zoom.x.toFixed(2)}, ${kf.zoom.y.toFixed(2)}, ${kf.zoom.scale.toFixed(2)}x)`
   );
 });
 
 // ============================================================
-//  CORE ALGORITHM
+//  ALGORITHM
 // ============================================================
 
 function generateScript(log) {
@@ -66,43 +56,43 @@ function generateScript(log) {
   const events  = log.events   || [];
 
   if (!samples.length && !events.length) {
-    console.warn("[generate] No data — returning fallback");
-    return fallback(1);
+    return { timeline: [fallbackKf(0, 1, vp)] };
   }
 
-  // ── 1. Merge samples + interaction events into one timeline ─
-  const points = mergeTimeline(samples, events);
+  // 1. Merge samples + click/focus events into one sorted timeline
+  const points = buildPoints(samples, events);
 
-  // ── 2. Per-point: compute raw zoom target from element chain ─
-  const rawTargets = points.map(p => ({
-    timeSec: p.time / 1000,
-    ...pointToZoom(p, vp),
-    isClick: p.isClick || false,
-    isFocus: p.isFocus || false
+  // 2. Per-point: compute raw zoom target
+  const raw = points.map(p => ({
+    timeSec:  p.time / 1000,
+    isClick:  p.isClick,
+    isFocus:  p.isFocus,
+    ...pointToZoom(p, vp)
   }));
 
-  // ── 3. Stabilize: suppress jitter, commit to zones ──────────
-  const stable = stabilize(rawTargets);
+  // 3. Stabilize — dwell-based zone locking kills jitter
+  const stable = stabilize(raw);
 
-  // ── 4. Collapse into keyframes ───────────────────────────────
-  const kfs = collapse(stable);
+  // 4. Collapse into keyframes
+  const kfs = collapse(stable, vp);
 
-  // ── 5. Prepend a default frame if data starts late ───────────
-  const result = [];
-  if (kfs.length && kfs[0].t[0] > 0.5) {
-    result.push({ t: [0, kfs[0].t[0]], zoom: { x: 0.5, y: 0.5, scale: 1 }, webcam: webcamPos(0.5, 0.5) });
+  // 5. Prepend default frame if data starts late
+  const timeline = [];
+  if (kfs.length && kfs[0].t[0] > 0.4) {
+    timeline.push(fallbackKf(0, kfs[0].t[0], vp));
   }
-  result.push(...kfs);
+  timeline.push(...kfs);
 
-  return result.length ? result : fallback(
-    samples.length ? samples[samples.length - 1].time / 1000 : 1
-  );
+  if (!timeline.length) {
+    const dur = samples.length ? samples[samples.length - 1].time / 1000 : 1;
+    return { timeline: [fallbackKf(0, dur, vp)] };
+  }
+
+  return { timeline };
 }
 
-// ── Merge samples + events, sorted by time ───────────────────
-// Events (click, focus) give precise element chains for interaction
-// moments. They're injected into the timeline at their exact time.
-function mergeTimeline(samples, events) {
+// ── Build sorted point list ───────────────────────────────────
+function buildPoints(samples, events) {
   const pts = samples.map(s => ({
     time:         s.time,
     x:            s.x,
@@ -113,16 +103,15 @@ function mergeTimeline(samples, events) {
   }));
 
   for (const e of events) {
-    if (e.type === "click" || e.type === "focus") {
-      pts.push({
-        time:         e.time,
-        x:            e.x || 0.5,
-        y:            e.y || 0.5,
-        elementChain: e.elementChain || [],
-        isClick:      e.type === "click",
-        isFocus:      e.type === "focus"
-      });
-    }
+    if (e.type !== "click" && e.type !== "focus") continue;
+    pts.push({
+      time:         e.time,
+      x:            e.x || 0.5,
+      y:            e.y || 0.5,
+      elementChain: e.elementChain || [],
+      isClick:      e.type === "click",
+      isFocus:      e.type === "focus"
+    });
   }
 
   pts.sort((a, b) => a.time - b.time);
@@ -131,23 +120,24 @@ function mergeTimeline(samples, events) {
 
 // ── Element → zoom target ─────────────────────────────────────
 //
-// Walk the element chain from the innermost element (chain[0]) upward.
-// Pick the FIRST element whose screen area is between MIN_FRAC and MAX_FRAC.
+// Walk the chain from innermost element upward.
+// Pick the FIRST element whose area is between MIN_FRAC and MAX_FRAC.
 //
-// MIN_FRAC (0.5%) — filters out tiny icons, bullets, text spans
-// MAX_FRAC (72%)  — filters out full-page scroll containers
+// Scale formula:
+//   We want the element to fill FILL (85%) of the zoomed visible frame.
+//   visible_w = viewport.w / scale  →  scale = viewport.w * FILL / el.w
+//   Take min(scale_by_width, scale_by_height) → fits on both axes.
+//   Cap: SCALE_MAX (2.5x) for maximum aggression.
 //
-// Scale: fit the picked element to fill FILL (82%) of the zoomed
-// frame on its tighter axis.
-//   sw = viewport.w * FILL / element.w  →  how much to zoom to fill width
-//   sh = viewport.h * FILL / element.h  →  how much to zoom to fill height
-//   scale = min(sw, sh)  →  the tighter axis determines zoom
-//
-// Center: 80% element center + 20% cursor.
-// Element anchor prevents drift; cursor nudge keeps it attentive.
-//
-// If no valid element found: cursor-follow at 1.4× zoom.
+// Center: 75% element center + 25% cursor
+//   Element anchor keeps frame stable; cursor pull keeps it pointed
+//   at what the user is actually looking at.
 
+const FILL      = 0.85;
+const SCALE_MAX = 2.50;   // aggressive
+const SCALE_MIN = 1.00;
+const MIN_FRAC  = 0.003;  // 0.3% — pick up small buttons too
+const MAX_FRAC  = 0.70;   // 70% — ignore full-page containers
 
 function pointToZoom(point, vp) {
   const chain  = point.elementChain || [];
@@ -158,7 +148,7 @@ function pointToZoom(point, vp) {
     const b = el.boundingBox;
     if (!b || b.w <= 0 || b.h <= 0) continue;
     const frac = (b.w * b.h) / screen;
-    if (frac >= SCALE_MIN && frac < SCALE_MAX) { box = b; break; }
+    if (frac >= MIN_FRAC && frac < MAX_FRAC) { box = b; break; }
   }
 
   let scale, cx, cy;
@@ -171,111 +161,93 @@ function pointToZoom(point, vp) {
     const ecx = (box.x + box.w / 2) / vp.width;
     const ecy = (box.y + box.h / 2) / vp.height;
 
-    cx = ecx * 0.80 + (point.x || 0.5) * 0.20;
-    cy = ecy * 0.80 + (point.y || 0.5) * 0.20;
+    cx = ecx * 0.75 + (point.x || 0.5) * 0.25;
+    cy = ecy * 0.75 + (point.y || 0.5) * 0.25;
 
-    // Nudge away from known fixed chrome
+    // Edge nudge: pull away from fixed nav/sidebar chrome
     if (box.x < vp.width  * 0.18) cx += 0.03;
     if (box.x + box.w > vp.width  * 0.82) cx -= 0.03;
     if (box.y < vp.height * 0.10) cy += 0.04;
   } else {
-    scale = 1.40;
+    // No valid element — cursor follow with moderate zoom
+    scale = 1.50;
     cx    = point.x || 0.5;
     cy    = point.y || 0.5;
   }
 
-  // Clicks and focus events get a small scale boost (max +10%)
-  // so interactions visually stand out
-  if (point.isClick) scale = Math.min(scale * 1.08, SCALE_MAX);
-  if (point.isFocus) scale = Math.min(scale * 1.04, SCALE_MAX);
+  // Clicks: +15% zoom boost (they're the most important moments)
+  // Focus:  +8%  zoom boost
+  if (point.isClick) scale = Math.min(scale * 1.15, SCALE_MAX);
+  if (point.isFocus) scale = Math.min(scale * 1.08, SCALE_MAX);
 
-  const clamped = clampCenter(cx, cy, scale);
-  return { cx: clamp(clamped.x), cy: clamp(clamped.y), scale };
+  const c = clampCenter(cx, cy, scale, vp);
+  return { cx: c.x, cy: c.y, scale };
 }
 
 // ── Stabilizer ────────────────────────────────────────────────
 //
-// Problem: cursor hovering near an element boundary causes rapid
-// alternation between two zoom targets → shaking hand effect.
+// State: LOCKED or BUFFERING
 //
-// Solution: dwell-based zone locking.
+// LOCKED:
+//   Emit the locked zoom for every sample that stays within
+//   ZONE_POS (manhattan) and ZONE_SCALE of the locked values.
+//   Any sample outside → enter BUFFERING.
 //
-//   DWELL_N = 12 consecutive samples (~600ms at 50ms/sample)
-//   ZONE_POS   = how close two targets must be to count as "same zone"
-//   ZONE_SCALE = same, for scale axis
+// BUFFERING:
+//   Collect consecutive out-of-zone samples.
+//   After DWELL_N samples that are mutually coherent (centroid check),
+//   commit the centroid as the new LOCKED zone.
+//   While buffering → keep emitting old locked zoom (camera holds still).
+//   If buffer loses coherence → drop oldest, keep trying.
 //
-// State machine:
-//   LOCKED  — we have a confirmed zoom zone; emit it for every sample
-//              that stays within ZONE_POS/SCALE of the locked values.
-//              If a sample drifts outside, start BUFFERING.
-//
-//   BUFFERING — collecting samples to see if the new position is stable.
-//               If DWELL_N consecutive samples stay within ZONE_* of
-//               each other → commit the centroid as the new LOCKED zone.
-//               If any sample breaks coherence → reset buffer.
-//               While buffering, emit the OLD locked zoom (hold steady).
-//
-// This means the camera only moves when the user has genuinely
-// settled into a new area for ~600ms. Short hovers and jitter
-// at element boundaries are completely invisible in the output.
+// DWELL_N = 10 samples = ~500ms at 50ms/sample
+// This means the camera only commits to a new position after
+// the cursor settles there for half a second.
 
+const DWELL_N    = 10;
+const ZONE_POS   = 0.07;  // manhattan distance threshold
+const ZONE_SCALE = 0.12;  // scale threshold
 
 function stabilize(targets) {
   if (!targets.length) return [];
 
-  // Output: each item is { timeSec, cx, cy, scale } with stabilized values
-  const out = [];
+  const out    = [];
+  let locked   = { cx: targets[0].cx, cy: targets[0].cy, scale: targets[0].scale };
+  let buffer   = [];
 
-  // Locked zone (what we're currently showing)
-  let locked = { cx: targets[0].cx, cy: targets[0].cy, scale: targets[0].scale };
+  const inZone = (t, z) =>
+    Math.abs(t.cx - z.cx) + Math.abs(t.cy - z.cy) <= ZONE_POS &&
+    Math.abs(t.scale - z.scale) <= ZONE_SCALE;
 
-  // Buffer of consecutive out-of-zone samples
-  let buffer = [];
+  const centroid = (arr) => ({
+    cx:    arr.reduce((s, t) => s + t.cx, 0) / arr.length,
+    cy:    arr.reduce((s, t) => s + t.cy, 0) / arr.length,
+    scale: arr.reduce((s, t) => s + t.scale, 0) / arr.length
+  });
 
-  function inZone(t, zone) {
-    const dPos   = Math.abs(t.cx - zone.cx) + Math.abs(t.cy - zone.cy);
-    const dScale = Math.abs(t.scale - zone.scale);
-    return dPos <= ZONE_POS && dScale <= ZONE_SCALE;
-  }
-
-  function centroid(arr) {
-    const n  = arr.length;
-    const cx = arr.reduce((s, t) => s + t.cx, 0) / n;
-    const cy = arr.reduce((s, t) => s + t.cy, 0) / n;
-    const sc = arr.reduce((s, t) => s + t.scale, 0) / n;
-    return { cx, cy, scale: sc };
-  }
-
-  // Check if all items in buffer are coherent with each other
-  // (not just with the first item — avoids slow drift accumulation)
-  function bufferIsCoherent(buf) {
-    const c = centroid(buf);
-    return buf.every(t => inZone(t, c));
-  }
+  const coherent = (arr) => {
+    const c = centroid(arr);
+    return arr.every(t => inZone(t, c));
+  };
 
   for (const t of targets) {
     if (inZone(t, locked)) {
-      // Still in current zone — hold locked values, reset buffer
       buffer = [];
-      out.push({ timeSec: t.timeSec, cx: locked.cx, cy: locked.cy, scale: locked.scale });
+      out.push({ timeSec: t.timeSec, ...locked });
     } else {
-      // Outside current zone — start/continue buffering
       buffer.push(t);
 
-      if (buffer.length >= DWELL_N && bufferIsCoherent(buffer)) {
-        // Confirmed new zone — commit
-        locked = centroid(buffer);
-        buffer = [];
-        out.push({ timeSec: t.timeSec, cx: locked.cx, cy: locked.cy, scale: locked.scale });
-      } else if (buffer.length >= DWELL_N && !bufferIsCoherent(buffer)) {
-        // Buffer is incoherent (cursor is wandering, not settling)
-        // Drop oldest sample and keep trying
-        buffer.shift();
-        // Emit locked (hold steady while user wanders)
-        out.push({ timeSec: t.timeSec, cx: locked.cx, cy: locked.cy, scale: locked.scale });
+      if (buffer.length >= DWELL_N) {
+        if (coherent(buffer)) {
+          locked = centroid(buffer);
+          buffer = [];
+          out.push({ timeSec: t.timeSec, ...locked });
+        } else {
+          buffer.shift(); // slide window
+          out.push({ timeSec: t.timeSec, ...locked }); // hold
+        }
       } else {
-        // Still accumulating — emit locked (hold steady)
-        out.push({ timeSec: t.timeSec, cx: locked.cx, cy: locked.cy, scale: locked.scale });
+        out.push({ timeSec: t.timeSec, ...locked }); // hold while buffering
       }
     }
   }
@@ -285,13 +257,15 @@ function stabilize(targets) {
 
 // ── Collapse into keyframes ───────────────────────────────────
 //
-// After stabilization, consecutive identical (or very similar)
-// values are collapsed into a single keyframe.
-// A new keyframe is emitted only when the stabilized values
-// actually change — which now only happens on genuine zone commits.
+// After stabilization, consecutive identical values collapse
+// into one keyframe. A new keyframe only emits when the
+// stabilized values actually change (= a zone commit happened).
 
+const KF_POS   = 0.008;
+const KF_SCALE = 0.015;
+const MIN_KF   = 0.25;    // seconds
 
-function collapse(stable) {
+function collapse(stable, vp) {
   if (!stable.length) return [];
 
   const kfs    = [];
@@ -299,21 +273,19 @@ function collapse(stable) {
   let tStart   = stable[0].timeSec;
   const endSec = stable[stable.length - 1].timeSec;
 
-  function emit(tEnd) {
+  const emit = (tEnd) => {
     if (tEnd - tStart < MIN_KF) return;
+    const zoom   = { x: round(anchor.cx), y: round(anchor.cy), scale: round(anchor.scale) };
+    const webcam = webcamPos(anchor.cx, anchor.cy);
     kfs.push({
-      t:      [parseFloat(tStart.toFixed(3)), parseFloat(tEnd.toFixed(3))],
-      zoom:   {
-        x:     parseFloat(anchor.cx.toFixed(4)),
-        y:     parseFloat(anchor.cy.toFixed(4)),
-        scale: parseFloat(anchor.scale.toFixed(4))
-      },
-      webcam: webcamPos(anchor.cx, anchor.cy)
+      t:      [round(tStart), round(tEnd)],
+      zoom,
+      webcam
     });
-  }
+  };
 
   for (let i = 1; i < stable.length; i++) {
-    const t      = stable[i];
+    const t    = stable[i];
     const dPos   = Math.abs(anchor.cx - t.cx) + Math.abs(anchor.cy - t.cy);
     const dScale = Math.abs(anchor.scale - t.scale);
 
@@ -322,11 +294,24 @@ function collapse(stable) {
       tStart = t.timeSec;
       anchor = t;
     }
-    // else extend current keyframe silently
   }
 
   emit(endSec);
   return kfs;
+}
+
+// ── Webcam position ───────────────────────────────────────────
+// Always in the corner opposite to where the zoom is pointing.
+// This avoids the webcam bubble covering the area of interest.
+function webcamPos(cx, cy) {
+  const left = cx < 0.5;
+  const top  = cy < 0.5;
+  return {
+    x: left ? 0.75 : 0.03,
+    y: top  ? 0.72 : 0.03,
+    w: 0.22,
+    h: 0.22
+  };
 }
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -334,23 +319,22 @@ function clamp(v, lo = 0.05, hi = 0.95) {
   return Math.max(lo, Math.min(hi, v));
 }
 
-function clampCenter(cx, cy, scale) {
-  const half = 0.5 / scale;
-  return { x: clamp(cx, half, 1 - half), y: clamp(cy, half, 1 - half) };
-}
-
-function webcamPos(cx, cy) {
+function clampCenter(cx, cy, scale, vp) {
+  // Keep the zoomed window fully inside [0,1] — no black edges
+  const halfX = (0.5 / scale);
+  const halfY = (0.5 / scale);
   return {
-    x: cx < 0.5 ? 0.78 : 0.00,
-    y: cy < 0.5 ? 0.78 : 0.00,
-    w: 0.22, h: 0.22
+    x: clamp(cx, halfX, 1 - halfX),
+    y: clamp(cy, halfY, 1 - halfY)
   };
 }
 
-function fallback(durSec) {
-  return [{
-    t:      [0, durSec],
-    zoom:   { x: 0.5, y: 0.5, scale: 1 },
-    webcam: { x: 0.78, y: 0.78, w: 0.22, h: 0.22 }
-  }];
+function round(v) { return parseFloat(v.toFixed(4)); }
+
+function fallbackKf(tStart, tEnd, vp) {
+  return {
+    t:      [round(tStart), round(tEnd)],
+    zoom:   { x: 0.5, y: 0.5, scale: 1.0 },
+    webcam: webcamPos(0.5, 0.5)
+  };
 }

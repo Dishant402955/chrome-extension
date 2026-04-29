@@ -1,24 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Recorder",
-  "version": "4.0",
-  "action": {
-    "default_title": "Open Recorder"
-  },
+  "version": "5.0",
+  "action": { "default_title": "Open Recorder" },
   "permissions": [
+    "activeTab",
+    "scripting",
     "tabs",
     "storage",
     "downloads",
     "windows"
   ],
   "host_permissions": ["<all_urls>"],
-  "background": {
-    "service_worker": "background.js"
-  },
+  "background": { "service_worker": "background.js" },
   "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"]
-    }
+    { "matches": ["<all_urls>"], "js": ["content.js"] }
   ]
 }

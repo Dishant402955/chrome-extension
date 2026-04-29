@@ -12,7 +12,7 @@
   --txt:#b8bcc4;--txt2:#525660;--txth:#eceef2;
   --mono:ui-monospace,'Cascadia Code','Fira Code',monospace;
 }
-html,body{width:280px;background:var(--bg);color:var(--txt);font-family:var(--mono);font-size:11px;line-height:1.45;overflow:hidden;user-select:none}
+html,body{width:300px;background:var(--bg);color:var(--txt);font-family:var(--mono);font-size:11px;line-height:1.45;overflow:hidden;user-select:none}
 
 .hdr{display:flex;align-items:center;justify-content:space-between;padding:9px 11px;background:var(--sur);border-bottom:1px solid var(--bdr)}
 .hdr-l{display:flex;align-items:center;gap:7px}
@@ -21,11 +21,13 @@ html,body{width:280px;background:var(--bg);color:var(--txt);font-family:var(--mo
 @keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(224,53,53,.7)}50%{box-shadow:0 0 0 5px rgba(224,53,53,0)}}
 .title{color:var(--txth);font-size:10px;letter-spacing:.14em;text-transform:uppercase}
 .ver{color:var(--txt2);font-size:9px}
+.btn-ico{background:none;border:1px solid var(--bdr);color:var(--txt2);font-family:var(--mono);font-size:10px;cursor:pointer;padding:2px 6px;transition:border-color .15s,color .15s}
+.btn-ico:hover{border-color:var(--bdr2);color:var(--txt)}
 
-.body{padding:11px;display:flex;flex-direction:column;gap:9px}
+.body{padding:10px;display:flex;flex-direction:column;gap:9px}
 .lbl{color:var(--txt2);font-size:9px;letter-spacing:.14em;text-transform:uppercase;margin-bottom:5px}
 
-.tabs{display:flex;flex-direction:column;gap:1px;max-height:140px;overflow-y:auto}
+.tabs{display:flex;flex-direction:column;gap:1px;max-height:130px;overflow-y:auto}
 .tabs::-webkit-scrollbar{width:3px}
 .tabs::-webkit-scrollbar-thumb{background:var(--bdr)}
 .tab{display:flex;align-items:center;gap:7px;padding:5px 7px;cursor:pointer;border:1px solid transparent;transition:background .1s,border-color .1s}
@@ -42,6 +44,13 @@ html,body{width:280px;background:var(--bg);color:var(--txt);font-family:var(--mo
 
 .div{height:1px;background:var(--bdr)}
 
+.quals{display:flex;gap:4px}
+.qual{flex:1;padding:5px 4px;text-align:center;border:1px solid var(--bdr);cursor:pointer;transition:background .1s,border-color .1s,color .1s;color:var(--txt2)}
+.qual:hover{border-color:var(--bdr2);color:var(--txt)}
+.qual.sel{border-color:var(--txth);color:var(--txth)}
+.qual-name{font-size:10px;font-weight:600;letter-spacing:.04em}
+.qual-desc{font-size:8px;margin-top:1px;opacity:.7}
+
 .stats{display:none;flex-direction:column;gap:3px;padding:7px;background:var(--sur2);border:1px solid var(--bdr)}
 .stats.show{display:flex}
 .st{display:flex;justify-content:space-between}
@@ -51,9 +60,7 @@ html,body{width:280px;background:var(--bg);color:var(--txt);font-family:var(--mo
 .foot{padding:9px 11px;background:var(--sur);border-top:1px solid var(--bdr);display:flex;flex-direction:column;gap:6px}
 .status-row{display:flex;justify-content:space-between;align-items:center}
 .status{color:var(--txt2);font-size:9px;letter-spacing:.08em}
-.status.live{color:var(--acc)}
-.status.done{color:var(--grn)}
-.status.err{color:#e08c00}
+.status.live{color:var(--acc)}.status.done{color:var(--grn)}.status.err{color:#e08c00}
 .timer{color:var(--txth);font-size:12px;font-feature-settings:"tnum"}
 
 .btn{width:100%;padding:8px;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;border:1px solid;cursor:pointer;transition:background .15s,color .15s,opacity .15s}
@@ -63,8 +70,6 @@ html,body{width:280px;background:var(--bg);color:var(--txt);font-family:var(--mo
 .btn-stop{background:transparent;border-color:var(--acc);color:var(--acc);animation:bb 1.5s ease-in-out infinite}
 .btn-stop:not(:disabled):hover{background:var(--acc);color:#fff}
 @keyframes bb{0%,100%{border-color:var(--acc)}50%{border-color:var(--acc2)}}
-
-.hint{color:var(--txt2);font-size:9px;text-align:center;line-height:1.5}
 </style>
 </head>
 <body>
@@ -75,8 +80,8 @@ html,body{width:280px;background:var(--bg);color:var(--txt);font-family:var(--mo
     <span class="title">Recorder</span>
   </div>
   <div style="display:flex;gap:6px;align-items:center">
-    <span class="ver">v4</span>
-    <button style="background:none;border:1px solid var(--bdr);color:var(--txt2);font-family:var(--mono);font-size:10px;cursor:pointer;padding:2px 6px" id="btnRefresh" title="Refresh">↺</button>
+    <span class="ver">v5</span>
+    <button class="btn-ico" id="btnRefresh">↺</button>
   </div>
 </div>
 
@@ -85,16 +90,16 @@ html,body{width:280px;background:var(--bg);color:var(--txt);font-family:var(--mo
     <div class="lbl">Capture tab</div>
     <div class="tabs" id="tabList"><div class="tab-empty">Loading…</div></div>
   </div>
-
   <div class="div"></div>
-
+  <div>
+    <div class="lbl">Quality</div>
+    <div class="quals" id="qualList"></div>
+  </div>
   <div class="stats" id="stats">
     <div class="st"><span class="st-k">TAB</span><span class="st-v" id="stTab">—</span></div>
     <div class="st"><span class="st-k">SAMPLES</span><span class="st-v" id="stSamples">0</span></div>
-    <div class="st"><span class="st-k">EVENTS</span><span class="st-v" id="stEvents">0</span></div>
+    <div class="st"><span class="st-k">WEBCAM</span><span class="st-v" id="stWebcam">—</span></div>
   </div>
-
-  <div class="hint" id="hint">Panel minimizes on start so the recording tab stays focused.</div>
 </div>
 
 <div class="foot">
@@ -102,8 +107,8 @@ html,body{width:280px;background:var(--bg);color:var(--txt);font-family:var(--mo
     <span class="status" id="statusEl">READY</span>
     <span class="timer"  id="timerEl"></span>
   </div>
-  <button class="btn btn-start" id="btnStart">▶  Start Logging</button>
-  <button class="btn btn-stop"  id="btnStop" style="display:none">⏹  Stop &amp; Save Log</button>
+  <button class="btn btn-start" id="btnStart">▶  Start Recording</button>
+  <button class="btn btn-stop"  id="btnStop" style="display:none">⏹  Stop &amp; Save</button>
 </div>
 
 <script src="panel.js"></script>
