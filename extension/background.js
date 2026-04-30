@@ -85,24 +85,40 @@ function downloadJson(obj, filename, saveAs = false) {
 // ── Message hub ──────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg) => {
 
-  if (msg.type === "START") {
-    const { tabId, quality } = msg;
-    recording        = true;
-    recordingTab     = tabId;
-    recordingQuality = quality;
-    allSamples       = [];
-    allEvents        = [];
-    viewport         = null;
-    startKeepAlive();
+if (msg.type === "START") {
+  const { tabId, quality } = msg;
 
-    chrome.tabs.update(tabId, { active: true }, () => {
-      if (chrome.runtime.lastError) {
-        notifyPanel({ type: "ERROR", message: "Could not switch to tab." });
-        return;
-      }
-      sendToTab(tabId, { type: "START", quality });
+  recording        = true;
+  recordingTab     = tabId;
+  recordingQuality = quality;
+  allSamples       = [];
+  allEvents        = [];
+  viewport         = null;
+
+  startKeepAlive();
+
+  chrome.tabs.get(tabId, (tab) => {
+    if (chrome.runtime.lastError || !tab) {
+      notifyPanel({ type: "ERROR", message: "Invalid tab." });
+      return;
+    }
+
+    // 🔥 CRITICAL: focus the correct window FIRST
+    chrome.windows.update(tab.windowId, { focused: true }, () => {
+      chrome.tabs.update(tabId, { active: true }, () => {
+
+        // small delay so Chrome actually applies focus
+        setTimeout(() => {
+          sendToTab(tabId, {
+            type: "START",
+            quality
+          });
+        }, 200);
+
+      });
     });
-  }
+  });
+}
 
   else if (msg.type === "STOP") {
     recording = false;

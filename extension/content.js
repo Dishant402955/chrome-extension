@@ -155,19 +155,26 @@ chrome.runtime.onMessage.addListener(async (msg) => {
   if (msg.type === "START") {
     const quality = msg.quality || { width: 1280, height: 720, bitrate: 4_000_000 };
 
-    // Screen capture
-    try {
-      screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { width: { ideal: quality.width }, height: { ideal: quality.height }, frameRate: { ideal: 30 } },
-        audio: false
-      });
-    } catch (_) {
-      safeSend({ type: "CONTENT_ERROR", message: "Screen capture cancelled." });
-      return;
-    }
+    // Screen capture — uses the stream ID from background so we
+    // capture EXACTLY the tab the user selected in the panel.
+    // No picker dialog, no wrong-tab problem.
+    const streamId = msg.streamId;
+try {
+  screenStream = await navigator.mediaDevices.getDisplayMedia({
+    video: {
+      width:  { ideal: quality.width },
+      height: { ideal: quality.height },
+      frameRate: { ideal: 30 }
+    },
+    audio: false
+  });
+} catch (err) {
+  safeSend({ type: "CONTENT_ERROR", message: "Screen capture cancelled." });
+  return;
+}
 
     if (!screenStream?.getTracks().length) {
-      safeSend({ type: "CONTENT_ERROR", message: "No screen source selected." });
+      safeSend({ type: "CONTENT_ERROR", message: "Screen stream empty." });
       return;
     }
 
@@ -180,7 +187,7 @@ chrome.runtime.onMessage.addListener(async (msg) => {
       webcamStream = null;
     }
 
-    // Stop if user closes the share picker via browser UI
+    // If the tab stream ends (tab closed etc.) treat as STOP
     screenStream.getTracks()[0].onended = () => { if (recording) safeSend({ type: "STOP" }); };
 
     // Reset state
