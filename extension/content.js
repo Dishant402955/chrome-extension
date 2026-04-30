@@ -1,5 +1,6 @@
 // ============================================================
 //  content.js — interaction logger + screen/webcam recorder
+//  (FIXED: logs now follow the ACTUAL captured tab)
 // ============================================================
 
 let recording      = false;
@@ -155,30 +156,29 @@ chrome.runtime.onMessage.addListener(async (msg) => {
   if (msg.type === "START") {
     const quality = msg.quality || { width: 1280, height: 720, bitrate: 4_000_000 };
 
-    // Screen capture — uses the stream ID from background so we
-    // capture EXACTLY the tab the user selected in the panel.
-    // No picker dialog, no wrong-tab problem.
-    const streamId = msg.streamId;
-try {
-  screenStream = await navigator.mediaDevices.getDisplayMedia({
-    video: {
-      width:  { ideal: quality.width },
-      height: { ideal: quality.height },
-      frameRate: { ideal: 30 }
-    },
-    audio: false
-  });
-} catch (err) {
-  safeSend({ type: "CONTENT_ERROR", message: "Screen capture cancelled." });
-  return;
-}
+    try {
+      screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          width:  { ideal: quality.width },
+          height: { ideal: quality.height },
+          frameRate: { ideal: 30 }
+        },
+        audio: false
+      });
+    } catch (err) {
+      safeSend({ type: "CONTENT_ERROR", message: "Screen capture cancelled." });
+      return;
+    }
+
+    // 🔥 FIX: tell background THIS is the real tab being recorded
+    safeSend({ type: "SWITCH_TO_THIS_TAB" });
 
     if (!screenStream?.getTracks().length) {
       safeSend({ type: "CONTENT_ERROR", message: "Screen stream empty." });
       return;
     }
 
-    // Webcam — optional, silently skipped if not available
+    // Webcam
     hasWebcam = false;
     try {
       webcamStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -187,10 +187,10 @@ try {
       webcamStream = null;
     }
 
-    // If the tab stream ends (tab closed etc.) treat as STOP
-    screenStream.getTracks()[0].onended = () => { if (recording) safeSend({ type: "STOP" }); };
+    screenStream.getTracks()[0].onended = () => {
+      if (recording) safeSend({ type: "STOP" });
+    };
 
-    // Reset state
     globalOffset  = 0;
     lastX = -1; lastY = -1;
     recentSamples = [];
@@ -199,14 +199,14 @@ try {
     screenChunks  = [];
     webcamChunks  = [];
 
-    // Screen recorder
-    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm";
+    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+      ? "video/webm;codecs=vp9"
+      : "video/webm";
 
     screenRecorder = new MediaRecorder(screenStream, { mimeType: mime, videoBitsPerSecond: quality.bitrate });
     screenRecorder.ondataavailable = (e) => { if (e.data.size > 0) screenChunks.push(e.data); };
     screenRecorder.start(1000);
 
-    // Webcam recorder
     if (hasWebcam) {
       webcamRecorder = new MediaRecorder(webcamStream, { mimeType: mime });
       webcamRecorder.ondataavailable = (e) => { if (e.data.size > 0) webcamChunks.push(e.data); };
@@ -223,9 +223,8 @@ try {
     });
   }
 
-  // ──────────── RESUME (after page navigation) ──────────────
+  // ──────────── RESUME ──────────────────────────────────────
   else if (msg.type === "RESUME") {
-    // Can't resume screen capture after navigation — just resume data collection
     globalOffset  = msg.startedAt || 0;
     lastX = -1; lastY = -1;
     recentSamples = [];
@@ -234,6 +233,7 @@ try {
     startTime     = performance.now();
     recording     = true;
     startSampling();
+
     safeSend({ type: "RECORDING_RESUMED", data: { viewport: { width: window.innerWidth, height: window.innerHeight } } });
   }
 
@@ -243,13 +243,11 @@ try {
     recording = false;
     stopSampling();
 
-    // Use background's accumulated data (cross-navigation)
     const bgSamples = msg.accumulated?.samples || [];
     const bgEvents  = msg.accumulated?.events  || [];
     const bgVP      = msg.accumulated?.viewport;
     const finalVP   = bgVP || { width: window.innerWidth, height: window.innerHeight };
 
-    // Stop recorders
     let screenDataUrl = null;
     let webcamDataUrl = null;
 
@@ -267,7 +265,6 @@ try {
       webcamDataUrl = await blobToDataURL(new Blob(webcamChunks, { type: "video/webm" }));
     }
 
-    // Release tracks
     screenStream?.getTracks().forEach(t => t.stop());
     webcamStream?.getTracks().forEach(t => t.stop());
     screenStream = null;
@@ -281,8 +278,8 @@ try {
         hasWebcam,
         log: {
           viewport:    finalVP,
-          sampleCount: (bgSamples.length || msg.accumulated?.samples?.length || 0),
-          eventCount:  (bgEvents.length  || msg.accumulated?.events?.length  || 0),
+          sampleCount: bgSamples.length,
+          eventCount:  bgEvents.length,
           durationMs:  bgSamples.length > 1 ? bgSamples[bgSamples.length - 1].time - bgSamples[0].time : 0,
           samples:     bgSamples,
           events:      bgEvents
