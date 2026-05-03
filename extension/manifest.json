@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Recorder",
-  "version": "5.0",
+  "version": "6.0",
   "action": { "default_title": "Open Recorder" },
   "permissions": [
     "activeTab",
     "scripting",
     "tabs",
-    "tabCapture",
     "storage",
     "downloads",
     "windows"
