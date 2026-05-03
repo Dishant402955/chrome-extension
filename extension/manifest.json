@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Recorder",
-  "version": "6.0",
+  "version": "7.0",
   "action": { "default_title": "Open Recorder" },
   "permissions": [
     "activeTab",

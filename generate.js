@@ -17,6 +17,20 @@
 const fs   = require("fs");
 const path = require("path");
 
+const FILL      = 0.85;
+const SCALE_MAX = 2.50;
+const SCALE_MIN = 1.00;
+const MIN_FRAC  = 0.003;
+const MAX_FRAC  = 0.70;
+
+const DWELL_N    = 10;
+const ZONE_POS   = 0.07;
+const ZONE_SCALE = 0.12;
+
+const KF_POS   = 0.008;
+const KF_SCALE = 0.015;
+const MIN_KF   = 0.25;
+
 const inputPath  = process.argv[2];
 const outputPath = process.argv[3] || inputPath.replace(/\.json$/, "_script.json");
 
@@ -86,11 +100,7 @@ function buildPoints(samples, events) {
   return pts;
 }
 
-const FILL      = 0.85;
-const SCALE_MAX = 2.50;
-const SCALE_MIN = 1.00;
-const MIN_FRAC  = 0.003;
-const MAX_FRAC  = 0.70;
+
 
 function pointToZoom(point, vp) {
   const chain  = point.elementChain || [];
@@ -128,9 +138,6 @@ function pointToZoom(point, vp) {
   return { cx: c.x, cy: c.y, scale };
 }
 
-const DWELL_N    = 10;
-const ZONE_POS   = 0.07;
-const ZONE_SCALE = 0.12;
 
 function stabilize(targets) {
   if (!targets.length) return [];
@@ -159,9 +166,6 @@ function stabilize(targets) {
   return out;
 }
 
-const KF_POS   = 0.008;
-const KF_SCALE = 0.015;
-const MIN_KF   = 0.25;
 
 function collapse(stable) {
   if (!stable.length) return [];
