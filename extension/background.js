@@ -13,6 +13,9 @@ let allSamples = [];
 let allEvents  = [];
 let viewport   = null;
 
+// NEW: fallback timer for STOP reliability
+let stopFallbackTimer = null;
+
 // ── Panel window ──────────────────────────────────────────────
 chrome.action.onClicked.addListener(() => {
   if (panelWinId !== null) {
@@ -26,7 +29,7 @@ chrome.action.onClicked.addListener(() => {
 
 function openPanel() {
   chrome.windows.create(
-    { url: "panel.html", type: "popup", width: 300, height: 320, focused: true },
+    { url: "panel.html", type: "popup", width: 420, height: 520, focused: true }, // UPDATED SIZE
     (win) => { panelWinId = win.id; }
   );
 }
@@ -98,14 +101,11 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 
       recorderTabId = tab.id;
 
-      // Focus tab properly before capture (important for Chrome behavior)
       chrome.windows.update(tab.windowId, { focused: true }, () => {
         chrome.tabs.update(tab.id, { active: true }, () => {
-
           setTimeout(() => {
             sendToTab(recorderTabId, { type: "START", quality });
           }, 200);
-
         });
       });
     });
@@ -113,7 +113,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 
   // ── STOP ────────────────────────────────────────────────
   else if (msg.type === "STOP") {
-    recording = false;
+
     stopKeepAlive();
 
     if (recorderTabId) {
@@ -121,6 +121,24 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
         type:        "STOP",
         accumulated: { samples: allSamples, events: allEvents, viewport }
       });
+
+      // NEW: fallback if FINAL_DATA never arrives
+      clearTimeout(stopFallbackTimer);
+      stopFallbackTimer = setTimeout(() => {
+        recording = false;
+        recorderTabId = null;
+
+        notifyPanel({
+          type: "ERROR",
+          message: "Recording stopped but no data received."
+        });
+
+        if (panelWinId) {
+          chrome.windows.update(panelWinId, { state: "normal", focused: true }, () => {
+            void chrome.runtime.lastError;
+          });
+        }
+      }, 8000); // 8 sec fallback
     }
   }
 
@@ -167,6 +185,10 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 
   // ── Final data ──────────────────────────────────────────
   else if (msg.type === "FINAL_DATA") {
+
+    clearTimeout(stopFallbackTimer);
+
+    recording = false;
     recorderTabId = null;
 
     const { screenDataUrl, webcamDataUrl, hasWebcam, log } = msg.data;
@@ -189,6 +211,8 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   }
 
   else if (msg.type === "CONTENT_ERROR") {
+    clearTimeout(stopFallbackTimer);
+
     recording = false;
     stopKeepAlive();
     recorderTabId = null;

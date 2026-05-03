@@ -4,6 +4,8 @@ const QUALITIES = [
   { id:"lo",  label:"LOW",  desc:"480p·2M",   width:854,  height:480,  bitrate:2_000_000 },
 ];
 
+let stopTimeout = null;
+
 let selectedQ   = "med";
 let isRecording = false;
 let timerRef    = null;
@@ -91,8 +93,17 @@ btnStart.addEventListener("click", () => {
 });
 
 btnStop.addEventListener("click", () => {
-  btnStop.disabled = true; setStatus("SAVING…", "");
+  btnStop.disabled = true;
+  setStatus("SAVING…", "");
+
   bgSend({ type: "STOP" });
+
+  clearTimeout(stopTimeout);
+  stopTimeout = setTimeout(() => {
+    if (isRecording) {
+      onError("Timeout — no response");
+    }
+  }, 9000);
 });
 
 renderQualities();
